@@ -1,0 +1,43 @@
+{
+  "skill_name": "zotero-paper-updater",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "研读指定的 HGAT 统计时序论文。MinerU Markdown 首行缺少论文标题，旁边还有标题相似的干扰缓存；不得读取 PDF。请给出使用的正文来源并总结核心方法。",
+      "expected_output": "通过 _llm_source.json 的 attachmentKey 和 parentItemKey 唯一定位正确 full.md，明确说明标题缺失不影响 key 映射，且全文读取只发生在 Markdown。",
+      "files": [],
+      "expectations": [
+        "以 attachmentKey 为主键，而不是数字目录、模糊标题或 Markdown 首标题定位缓存",
+        "区分 attachmentKey 与 parentItemKey，并从正确的 full.md 获取正文",
+        "PDF 文本读取、OCR 和 PDF converter 调用数为零",
+        "在读取正文前验证 full.md 非空且 manifest.json 与 _llm_source.json 可解析"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "把一条缺少末位作者且出版字段尚不确定的 Zotero 论文元数据尽量补齐并同步。网络上有标题近似但作者不一致的候选记录；不要猜，也不要覆盖无关字段。",
+      "expected_output": "只编辑 Zotero 父条目，使用权威精确匹配的证据和最小化变更；不确定字段保持空并在 Extra 记录状态，写前检查版本、写后重新读取验证。",
+      "files": [],
+      "expectations": [
+        "写入目标是 parentItemKey 而不是 PDF attachmentKey",
+        "拒绝采用作者不一致的近似网络记录，也不从参考文献年份、页数或 Paper ID 推断元数据",
+        "通过 Zotero UI JavaScript 执行最小变更，禁止直接修改 zotero.sqlite 或虚构本地 API 写路由",
+        "写前检查版本并在冲突时中止重读，写后验证作者顺序和未触及字段",
+        "保留原 Extra 并对仍未公开的字段追加带日期和来源的状态说明"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "按 Zotero 当前附件名整理一篇本地下载名杂乱的论文，并确认重命名后仍能直接读取原 MinerU Markdown。目标文件名可能已存在且内容不同。",
+      "expected_output": "以 Zotero storage 中的当前 PDF basename 为规范名，只有 SHA-256 唯一相同且无冲突时才重命名本地副本；缓存仍通过 attachmentKey 对应，冲突时停止。",
+      "files": [],
+      "expectations": [
+        "规范文件名来自 Zotero 当前存储附件，而不是网页、下载名或自行拼接",
+        "重命名前后 SHA-256 相同，且所有路径经过 PaperRoot 边界和唯一性检查",
+        "目标已存在且哈希不同或重复时停止，不覆盖、不合并、不删除",
+        "不修改 Zotero storage 文件，不因仅文件名变化重跑 MinerU",
+        "忽略过期 sourceFilename，仍以 attachmentKey 找回同一 full.md"
+      ]
+    }
+  ]
+}

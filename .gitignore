@@ -1,0 +1,50 @@
+# Local skill registry and install metadata
+.openskills.json
+.skills-list.json
+.backup-*/
+
+# Packaged and generated artifacts
+dist/
+build/
+reports/
+tmp/
+.cache/
+*.skill
+*.zip
+audit-*.json
+*.log
+*.tmp
+*.bak
+
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Papers, Zotero state, and MinerU outputs
+*.pdf
+zotero.sqlite*
+**/full.md
+**/_llm_source.json
+**/manifest.json
+**/content_list.json
+**/images/
+notes/
