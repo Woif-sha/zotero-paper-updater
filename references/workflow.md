@@ -9,6 +9,10 @@ Use the installed Zotero skill's helper and begin with status --json. Confirm:
 - the user library route works;
 - the discovered data directory matches the directory used for storage and MinerU.
 
+Before relying on plugin-specific behavior, run `scripts/check-llm-for-zotero-version.ps1 -RequireLatest`. It reads the installed add-on record and XPI manifest, then compares them with the stable update manifest published by [yilewang/llm-for-zotero](https://github.com/yilewang/llm-for-zotero). Do not claim the plugin is current when this online check fails. If an authorized update is installed through Zotero, rerun both the version check and Zotero status probe.
+
+Resolve the data directory in this order: an explicit user path, `ZOTERO_DATA_DIR`, the existing local default `E:\ZoteroData`, and finally Zotero status/profile discovery. Report the resolved path rather than assuming the fallback was used.
+
 Use the local API for reads and verification. Use Zotero UI/Run JavaScript for edits. Never edit zotero.sqlite directly, even while Zotero is closed.
 
 Inventory parent items and their PDF children. Keep these identifiers distinct:
@@ -22,7 +26,7 @@ Inventory parent items and their PDF children. Keep these identifiers distinct:
 
 Recursively enumerate _llm_source.json under the MinerU root. For each record:
 
-1. Parse JSON and require attachmentKey and parentItemKey.
+1. Parse JSON and require current provenance kind `llm-for-zotero/mineru-cache-source`, version 2, attachmentId, attachmentKey, parentItemKey, origin, and recordedAt.
 2. Treat the containing numeric folder as a cache location, not identity.
 3. Resolve ZoteroData\storage\attachmentKey.
 4. Require exactly one current PDF in that storage directory.
@@ -30,6 +34,8 @@ Recursively enumerate _llm_source.json under the MinerU root. For each record:
 6. Detect duplicate attachment keys and orphaned cache records.
 
 sourceFilename records the name at parse time. It is useful as evidence but is not an invariant after renaming.
+
+For a single-paper reading request, use `scripts/resolve-paper-md.ps1` with a parent or attachment key. If a parent has multiple PDF caches, stop and select the attachment explicitly rather than guessing.
 
 ## 3. Cache health
 
@@ -49,7 +55,9 @@ out-of-bounds optional figureBlocks locator as a quality warning when full.md,
 totalChars, and section ranges remain valid; do not use that locator for
 slicing, and report it for reparsing/plugin repair.
 
-The plugin's normal cache check only tests for the presence of full.md and may accept an empty or stale file. Replacing the content of an existing attachment may not trigger automatic reparsing.
+The plugin's availability check accepts an existing current or legacy Markdown path and may accept an empty or stale file. Automatic parsing skips an attachment that is already reported as available, and ordinary modify events are not a general freshness check. Replacing the content of an existing attachment may therefore leave a stale cache.
+
+See `llm-for-zotero-implementation.md` for the versioned source evidence behind these rules.
 
 ## 4. Reading a paper
 
@@ -63,6 +71,14 @@ When valid Markdown is unavailable, mark the paper unreadable in MD-first mode a
 
 Read the current parent record immediately before preparing changes. Compare it field by field with evidence. Prefer exact, first-party records and record URLs or identifiers in the work log.
 
+Do not let empty applicable fields disappear from the report. Classify every gap as one of:
+
+- verified and ready to write;
+- already documented as formally unavailable;
+- unresolved and requiring an online source check.
+
+The audit script treats missing title, creators, or date as core errors. It also reports item-type-specific fields such as venue, volume, issue, pages, DOI, URL, language, publisher, place, and ISSN/ISBN. A recommended field can remain formally empty only when `Extra` names that field and records when and where its availability was checked.
+
 Common traps:
 
 - A DOI deposit date is not necessarily the publication date.
@@ -72,9 +88,9 @@ Common traps:
 - A manifest page count is the PDF length, not bibliographic pages.
 - Organization of a conference is not necessarily the proceedings publisher.
 
-If a formal record is pending, leave DOI, pages, volume, issue, or publisher empty as appropriate. Append a line such as:
+If a formal record is pending, leave DOI, pages, volume, issue, or publisher empty as appropriate. Append a field-specific line such as:
 
-    Metadata status checked YYYY-MM-DD: DOI and final pagination are not yet publicly registered. Source: official conference program URL.
+    Metadata status checked YYYY-MM-DD: DOI, pages unavailable. Source: official conference program URL.
 
 Preserve existing Extra content and avoid duplicate status lines.
 
@@ -154,5 +170,7 @@ The final audit must show:
 - identical local and Zotero basenames;
 - identical SHA-256 hashes;
 - no unaccounted PDF in the managed paper root.
+- no missing core bibliographic field;
+- no applicable empty field that lacks either verified data or a dated, sourced status note in Extra.
 
 If any gate fails, report the record and the corrective action still needed. Do not reduce the error to a generic “not synced” message.

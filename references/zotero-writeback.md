@@ -33,7 +33,7 @@ Replace every placeholder from verified evidence. Keep fields absent from the ch
     const creators = [
       { firstName: "First", lastName: "Author", creatorType: "author" }
     ];
-    const extraLine = "Metadata status checked YYYY-MM-DD: ... Source: ...";
+    const extraLine = "Metadata status checked YYYY-MM-DD: DOI, pages unavailable. Source: https://official.example/...";
 
     const item = await Zotero.Items.getByLibraryAndKeyAsync(
       libraryID,
@@ -90,6 +90,8 @@ Replace every placeholder from verified evidence. Keep fields absent from the ch
 - Preserve tags, collections, relations, abstract, dateAdded, and other untouched fields.
 - Changing the item type can invalidate field names. Verify the target field vocabulary for the new type before saving.
 - Keep existing Extra content and append only a non-duplicated status line.
+- Name every intentionally empty applicable field in the status line. Include the check date and the authoritative URL so the gap can be distinguished from an overlooked field and rechecked later.
+- Do not use an Extra status note as a shortcut around research. Search Markdown and authoritative online records first; the note is for fields that remain formally unavailable after that check.
 
 ## Post-write verification
 
@@ -101,5 +103,6 @@ Read the parent again through Zotero's local API and compare it with the pre-wri
 - the item version advanced normally;
 - no duplicate parent item was created;
 - the PDF attachment still belongs to the same parent.
+- every applicable field reported by the audit is now populated or appears by name in a dated, sourced Extra status line.
 
 If the write fails, surface Zotero's error and correct the actual field/type problem. Do not add a broad try/catch that hides the failure.

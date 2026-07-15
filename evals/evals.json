@@ -23,7 +23,8 @@
         "拒绝采用作者不一致的近似网络记录，也不从参考文献年份、页数或 Paper ID 推断元数据",
         "通过 Zotero UI JavaScript 执行最小变更，禁止直接修改 zotero.sqlite 或虚构本地 API 写路由",
         "写前检查版本并在冲突时中止重读，写后验证作者顺序和未触及字段",
-        "保留原 Extra 并对仍未公开的字段追加带日期和来源的状态说明"
+        "保留原 Extra，并对每个仍未公开的适用字段追加包含字段名、检查日期和权威来源的状态说明",
+        "不得把未检索的空字段当成完成；尤其要主动核实缺失的出版时间"
       ]
     },
     {
@@ -37,6 +38,31 @@
         "目标已存在且哈希不同或重复时停止，不覆盖、不合并、不删除",
         "不修改 Zotero storage 文件，不因仅文件名变化重跑 MinerU",
         "忽略过期 sourceFilename，仍以 attachmentKey 找回同一 full.md"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Zotero 数据就在 E:\\ZoteroData。请研读 parentItemKey=Z2SQADYZ 对应论文；插件缓存目录是数字编号，manifest 没有章节。以后不要再读 PDF。",
+      "expected_output": "按默认数据目录和 provenance 唯一解析 parentItemKey 到 attachmentKey 与 full.md；完成缓存健康检查后直接读取完整 Markdown，不因 manifest 零章节而回退 PDF。",
+      "files": [],
+      "expectations": [
+        "优先使用 scripts/resolve-paper-md.ps1 或等价的 key 映射，而不是用标题猜数字缓存目录",
+        "解析出 parentItemKey、attachmentKey、attachmentId 和 fullMdPath 的不同角色",
+        "manifest 无章节时检查 totalChars 后读取完整 full.md",
+        "PDF 正文读取、OCR 和 PDF converter 调用数为零"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "我在原 Zotero PDF 附件记录上替换了文件内容，但 llm-for-zotero 仍显示已经解析。请确认现有 MD 能不能继续用；不要为了省事直接读 PDF。",
+      "expected_output": "识别出插件缓存可用状态不等于内容新鲜，且 provenance v2 没有源 PDF 哈希；把已知附件替换判为需要重解析，不把文件名变化与内容替换混为一谈。",
+      "files": [],
+      "expectations": [
+        "指出 full.md 存在只能证明缓存路径存在，不能证明它对应当前 PDF 字节",
+        "指出 _llm_source.json provenance v2 不保存源 PDF 哈希",
+        "已知附件内容替换时停止使用旧 Markdown并要求通过插件重解析或修复",
+        "仅文件名变化时不错误地要求重解析",
+        "未经明确授权不读取 PDF 正文，也不直接删除缓存目录"
       ]
     }
   ]

@@ -3,7 +3,6 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PaperRoot,
 
-    [Parameter(Mandatory = $true)]
     [string]$ZoteroDataDir,
 
     [string]$ZoteroApiBase = "http://127.0.0.1:23119/api/users/0",
@@ -12,31 +11,14 @@ param(
 
     [switch]$SkipApi,
 
+    [switch]$RequireAllCaches,
+
     [switch]$AllowIncomplete
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-
-function New-Issue {
-    param(
-        [Parameter(Mandatory = $true)]
-        [ValidateSet("error", "warning")]
-        [string]$Severity,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Code,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Message
-    )
-
-    [pscustomobject]@{
-        severity = $Severity
-        code = $Code
-        message = $Message
-    }
-}
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.Common.psm1") -Force
 
 function Resolve-ExistingDirectory {
     param(
@@ -52,6 +34,170 @@ function Resolve-ExistingDirectory {
     }
 
     (Resolve-Path -LiteralPath $Path).Path
+}
+
+function Test-MetadataGapDocumented {
+    param(
+        [string]$Extra,
+        [Parameter(Mandatory = $true)]
+        [string]$Field
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Extra)) {
+        return $false
+    }
+
+    $normalized = $Extra.ToLowerInvariant()
+    $hasStatusContext =
+        $normalized.Contains("metadata status checked") -or
+        $normalized.Contains("not publicly registered") -or
+        $normalized.Contains("not available") -or
+        $normalized.Contains("unavailable") -or
+        $normalized.Contains("尚未公开") -or
+        $normalized.Contains("未公开") -or
+        $normalized.Contains("无可核验")
+    if (-not $hasStatusContext) {
+        return $false
+    }
+    $hasCheckDate = $normalized -match "\b(?:19|20)\d{2}-\d{2}-\d{2}\b"
+    $hasSource =
+        $normalized.Contains("source:") -or
+        $normalized.Contains("source：") -or
+        $normalized.Contains("来源:") -or
+        $normalized.Contains("来源：")
+    if (-not $hasCheckDate -or -not $hasSource) {
+        return $false
+    }
+
+    $aliases = @{
+        publicationTitle = @("publicationtitle", "journal", "期刊")
+        bookTitle = @("booktitle", "book title", "书名")
+        proceedingsTitle = @("proceedingstitle", "proceedings", "论文集")
+        conferenceName = @("conferencename", "conference", "会议")
+        volume = @("volume", "卷")
+        issue = @("issue", "期")
+        pages = @("pages", "pagination", "page range", "页码")
+        DOI = @("doi")
+        url = @("url", "official page", "官网")
+        language = @("language", "语言")
+        publisher = @("publisher", "出版社")
+        place = @("place", "eventplace", "地点")
+        ISSN = @("issn")
+        ISBN = @("isbn")
+        institution = @("institution", "机构")
+        reportNumber = @("reportnumber", "report number", "报告编号")
+        university = @("university", "大学")
+        repository = @("repository", "archive", "预印本平台")
+        archiveID = @("archiveid", "archive id", "预印本编号")
+    }
+
+    $fieldAliases = $aliases[$Field]
+    if ($null -eq $fieldAliases) {
+        $fieldAliases = @($Field.ToLowerInvariant())
+    }
+    foreach ($alias in $fieldAliases) {
+        if ($normalized.Contains([string]$alias)) {
+            return $true
+        }
+    }
+    $false
+}
+
+function Get-RecommendedMetadataFields {
+    param([string]$ItemType)
+
+    $common = @("language", "url")
+    $byType = @{
+        journalArticle = @("publicationTitle", "volume", "issue", "pages", "DOI", "ISSN")
+        conferencePaper = @("proceedingsTitle", "conferenceName", "publisher", "place", "pages", "DOI")
+        bookSection = @("bookTitle", "publisher", "place", "pages", "ISBN", "DOI")
+        book = @("publisher", "place", "ISBN", "DOI")
+        report = @("institution", "reportNumber", "place", "DOI")
+        thesis = @("university", "place", "DOI")
+        preprint = @("repository", "archiveID", "DOI")
+    }
+
+    $specific = $byType[$ItemType]
+    if ($null -eq $specific) {
+        $specific = @("DOI")
+    }
+    @($common + $specific | Select-Object -Unique)
+}
+
+function Get-MetadataAudit {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$ParentData
+    )
+
+    $issues = [System.Collections.Generic.List[object]]::new()
+    $missingCore = [System.Collections.Generic.List[string]]::new()
+    $missingRecommended = [System.Collections.Generic.List[string]]::new()
+    $documentedUnavailable = [System.Collections.Generic.List[string]]::new()
+    $unresolved = [System.Collections.Generic.List[string]]::new()
+
+    $itemType = [string](Get-OptionalPropertyValue -Object $ParentData -Name "itemType")
+    $title = [string](Get-OptionalPropertyValue -Object $ParentData -Name "title")
+    $date = [string](Get-OptionalPropertyValue -Object $ParentData -Name "date")
+    $creatorsValue = Get-OptionalPropertyValue -Object $ParentData -Name "creators"
+    $creators = @()
+    if ($null -ne $creatorsValue) {
+        $creators = @($creatorsValue)
+    }
+    $extra = [string](Get-OptionalPropertyValue -Object $ParentData -Name "extra")
+
+    if ([string]::IsNullOrWhiteSpace($title)) {
+        $missingCore.Add("title")
+    }
+    if ($creators.Count -eq 0) {
+        $missingCore.Add("creators")
+    }
+    if ([string]::IsNullOrWhiteSpace($date)) {
+        $missingCore.Add("date")
+    }
+
+    foreach ($field in (Get-RecommendedMetadataFields -ItemType $itemType)) {
+        $value = Get-OptionalPropertyValue -Object $ParentData -Name $field
+        $isMissing = $null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)
+        if (-not $isMissing) {
+            continue
+        }
+
+        $missingRecommended.Add($field)
+        if (Test-MetadataGapDocumented -Extra $extra -Field $field) {
+            $documentedUnavailable.Add($field)
+            $issues.Add((New-Issue -Severity "warning" -Code "metadata_gap_documented" -Message "$field is empty but its unavailable status is documented in Extra"))
+        }
+        else {
+            $unresolved.Add($field)
+            $issues.Add((New-Issue -Severity "error" -Code "metadata_research_required" -Message "$field is empty and has no dated, sourced availability note in Extra"))
+        }
+    }
+
+    if ($missingCore.Count -gt 0) {
+        $issues.Add((New-Issue -Severity "error" -Code "metadata_core_missing" -Message "Missing core Zotero metadata: $($missingCore -join ', ')"))
+    }
+
+    [pscustomobject]@{
+        status = if ($missingCore.Count -gt 0) {
+            "incomplete_core"
+        }
+        elseif ($unresolved.Count -gt 0) {
+            "needs_research"
+        }
+        elseif ($documentedUnavailable.Count -gt 0) {
+            "documented_gaps"
+        }
+        else {
+            "complete"
+        }
+        itemType = $itemType
+        missingCoreFields = $missingCore
+        missingRecommendedFields = $missingRecommended
+        documentedUnavailableFields = $documentedUnavailable
+        unresolvedFields = $unresolved
+        issues = $issues
+    }
 }
 
 function Test-PathWithinRoot {
@@ -80,7 +226,7 @@ function Test-PathWithinRoot {
 }
 
 $resolvedPaperRoot = Resolve-ExistingDirectory -Path $PaperRoot -Label "Paper root"
-$resolvedZoteroDataDir = Resolve-ExistingDirectory -Path $ZoteroDataDir -Label "Zotero data directory"
+$resolvedZoteroDataDir = Resolve-ZoteroDataDirectory -RequestedPath $ZoteroDataDir
 $mineruRoot = Join-Path $resolvedZoteroDataDir "llm-for-zotero-mineru"
 $storageRoot = Join-Path $resolvedZoteroDataDir "storage"
 $resolvedMineruRoot = Resolve-ExistingDirectory -Path $mineruRoot -Label "MinerU root"
@@ -121,14 +267,35 @@ foreach ($sourceFile in $sourceFiles) {
         $source = Get-Content -LiteralPath $sourceFile.FullName -Raw | ConvertFrom-Json
     }
     catch {
-        $globalIssues.Add((New-Issue -Severity "warning" -Code "invalid_provenance_json" -Message "$($sourceFile.FullName): $($_.Exception.Message)"))
+        $severity = if ($RequireAllCaches) { "error" } else { "warning" }
+        $globalIssues.Add((New-Issue -Severity $severity -Code "invalid_provenance_json" -Message "$($sourceFile.FullName): $($_.Exception.Message)"))
         continue
     }
 
-    $attachmentKey = [string]$source.attachmentKey
-    $parentItemKey = [string]$source.parentItemKey
+    $kind = [string](Get-OptionalPropertyValue -Object $source -Name "kind")
+    $versionValue = Get-OptionalPropertyValue -Object $source -Name "version"
+    $attachmentIdValue = Get-OptionalPropertyValue -Object $source -Name "attachmentId"
+    $attachmentKey = [string](Get-OptionalPropertyValue -Object $source -Name "attachmentKey")
+    $parentItemKey = [string](Get-OptionalPropertyValue -Object $source -Name "parentItemKey")
+    $sourceFilename = [string](Get-OptionalPropertyValue -Object $source -Name "sourceFilename")
+    $origin = [string](Get-OptionalPropertyValue -Object $source -Name "origin")
+    $recordedAt = [string](Get-OptionalPropertyValue -Object $source -Name "recordedAt")
+
+    if ($kind -ne "llm-for-zotero/mineru-cache-source") {
+        $cacheIssues.Add((New-Issue -Severity "error" -Code "provenance_kind_invalid" -Message "$($sourceFile.FullName) has unexpected provenance kind '$kind'"))
+    }
+    if ($null -eq $versionValue -or [long]$versionValue -ne 2) {
+        $cacheIssues.Add((New-Issue -Severity "error" -Code "provenance_version_invalid" -Message "$($sourceFile.FullName) is not provenance version 2"))
+    }
+    if ($origin -ne "parsed" -and $origin -ne "restored") {
+        $cacheIssues.Add((New-Issue -Severity "error" -Code "provenance_origin_invalid" -Message "$($sourceFile.FullName) has invalid origin '$origin'"))
+    }
+    if ([string]::IsNullOrWhiteSpace($recordedAt)) {
+        $cacheIssues.Add((New-Issue -Severity "error" -Code "provenance_recorded_at_missing" -Message "$($sourceFile.FullName) has no recordedAt timestamp"))
+    }
     if ([string]::IsNullOrWhiteSpace($attachmentKey)) {
-        $globalIssues.Add((New-Issue -Severity "warning" -Code "missing_attachment_key" -Message "$($sourceFile.FullName) has no attachmentKey"))
+        $severity = if ($RequireAllCaches) { "error" } else { "warning" }
+        $globalIssues.Add((New-Issue -Severity $severity -Code "missing_attachment_key" -Message "$($sourceFile.FullName) has no attachmentKey"))
         continue
     }
     if ([string]::IsNullOrWhiteSpace($parentItemKey)) {
@@ -138,95 +305,15 @@ foreach ($sourceFile in $sourceFiles) {
     $cacheDirectoryName = Split-Path -Leaf $cacheDir
     if (
         $cacheDirectoryName -match "^\d+$" -and
-        $null -ne $source.attachmentId -and
-        [string]$source.attachmentId -ne $cacheDirectoryName
+        $null -ne $attachmentIdValue -and
+        [string]$attachmentIdValue -ne $cacheDirectoryName
     ) {
-        $cacheIssues.Add((New-Issue -Severity "error" -Code "attachment_id_directory_mismatch" -Message "Cache directory $cacheDirectoryName does not match provenance attachmentId $($source.attachmentId)"))
+        $cacheIssues.Add((New-Issue -Severity "error" -Code "attachment_id_directory_mismatch" -Message "Cache directory $cacheDirectoryName does not match provenance attachmentId $attachmentIdValue"))
     }
 
-    $fullMdPath = Join-Path $cacheDir "full.md"
-    $manifestPath = Join-Path $cacheDir "manifest.json"
-    $mdLength = $null
-    $manifestTotalChars = $null
-    $manifestCharCountMatches = $null
-
-    if (-not (Test-Path -LiteralPath $fullMdPath -PathType Leaf)) {
-        $cacheIssues.Add((New-Issue -Severity "error" -Code "missing_full_md" -Message "Missing full.md: $fullMdPath"))
-    }
-    else {
-        try {
-            $mdText = [System.IO.File]::ReadAllText($fullMdPath)
-            $mdLength = $mdText.Length
-            if ($mdLength -eq 0) {
-                $cacheIssues.Add((New-Issue -Severity "error" -Code "empty_full_md" -Message "full.md is empty: $fullMdPath"))
-            }
-        }
-        catch {
-            $cacheIssues.Add((New-Issue -Severity "error" -Code "unreadable_full_md" -Message "$($fullMdPath): $($_.Exception.Message)"))
-        }
-    }
-
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-        $cacheIssues.Add((New-Issue -Severity "error" -Code "missing_manifest" -Message "Missing manifest.json: $manifestPath"))
-    }
-    else {
-        try {
-            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-            if ($null -ne $manifest.totalChars) {
-                $manifestTotalChars = [long]$manifest.totalChars
-                if ($null -ne $mdLength) {
-                    $manifestCharCountMatches = $manifestTotalChars -eq $mdLength
-                    if (-not $manifestCharCountMatches) {
-                        $cacheIssues.Add((New-Issue -Severity "error" -Code "manifest_char_count_mismatch" -Message "manifest.totalChars=$manifestTotalChars but full.md UTF-16 length=$mdLength in $cacheDir"))
-                    }
-                }
-            }
-
-            if ($null -ne $mdLength) {
-                foreach ($section in @($manifest.sections)) {
-                    if (
-                        $null -ne $section.charStart -and
-                        $null -ne $section.charEnd
-                    ) {
-                        $sectionStart = [long]$section.charStart
-                        $sectionEnd = [long]$section.charEnd
-                        if (
-                            $sectionStart -lt 0 -or
-                            $sectionEnd -lt $sectionStart -or
-                            $sectionEnd -gt $mdLength
-                        ) {
-                            $heading = [string]$section.heading
-                            $cacheIssues.Add((New-Issue -Severity "error" -Code "manifest_section_range_invalid" -Message "Section '$heading' has range [$sectionStart,$sectionEnd) outside full.md length $mdLength in $cacheDir"))
-                        }
-                    }
-                }
-
-                foreach ($block in @($manifest.figureBlocks)) {
-                    $ranges = @(
-                        @("markdown", $block.markdownStart, $block.markdownEnd),
-                        @("context", $block.contextStart, $block.contextEnd)
-                    )
-                    foreach ($range in $ranges) {
-                        if ($null -eq $range[1] -or $null -eq $range[2]) {
-                            continue
-                        }
-                        $rangeStart = [long]$range[1]
-                        $rangeEnd = [long]$range[2]
-                        if (
-                            $rangeStart -lt 0 -or
-                            $rangeEnd -lt $rangeStart -or
-                            $rangeEnd -gt $mdLength
-                        ) {
-                            $blockId = [string]$block.blockId
-                            $cacheIssues.Add((New-Issue -Severity "warning" -Code "manifest_figure_range_invalid" -Message "Figure block '$blockId' has $($range[0]) range [$rangeStart,$rangeEnd) outside full.md length $mdLength in $cacheDir"))
-                        }
-                    }
-                }
-            }
-        }
-        catch {
-            $cacheIssues.Add((New-Issue -Severity "error" -Code "invalid_manifest_json" -Message "$($manifestPath): $($_.Exception.Message)"))
-        }
+    $cacheHealth = Test-MineruCacheHealth -CacheDirectory $cacheDir
+    foreach ($cacheIssue in $cacheHealth.issues) {
+        $cacheIssues.Add($cacheIssue)
     }
 
     $storageDir = Join-Path $resolvedStorageRoot $attachmentKey
@@ -254,15 +341,19 @@ foreach ($sourceFile in $sourceFiles) {
 
     $cacheCandidates.Add([pscustomobject]@{
         cacheDirectory = $cacheDir
-        attachmentId = $source.attachmentId
+        attachmentId = $attachmentIdValue
         attachmentKey = $attachmentKey
         parentItemKey = $parentItemKey
-        sourceFilename = [string]$source.sourceFilename
-        fullMdPath = $fullMdPath
-        fullMdUtf16Length = $mdLength
-        manifestPath = $manifestPath
-        manifestTotalChars = $manifestTotalChars
-        manifestCharCountMatches = $manifestCharCountMatches
+        sourceFilename = $sourceFilename
+        provenanceKind = $kind
+        provenanceVersion = $versionValue
+        provenanceOrigin = $origin
+        provenanceRecordedAt = $recordedAt
+        fullMdPath = $cacheHealth.fullMdPath
+        fullMdUtf16Length = $cacheHealth.fullMdUtf16Length
+        manifestPath = $cacheHealth.manifestPath
+        manifestTotalChars = $cacheHealth.manifestTotalChars
+        manifestCharCountMatches = $cacheHealth.manifestCharCountMatches
         zoteroStoragePdf = $zoteroPdf
         zoteroFilename = if ($null -ne $zoteroPdf) { Split-Path -Leaf $zoteroPdf } else { $null }
         zoteroSha256 = $zoteroHash
@@ -315,6 +406,8 @@ foreach ($localPdf in $localPdfs) {
     $recordIssues = [System.Collections.Generic.List[object]]::new()
     $localHash = $null
     $matches = @()
+    $metadataAudit = $null
+    $parentTitle = $null
 
     if (-not $SkipHash) {
         try {
@@ -375,6 +468,13 @@ foreach ($localPdf in $localPdfs) {
                 if ([string]$parentItem.data.itemType -eq "attachment") {
                     $recordIssues.Add((New-Issue -Severity "error" -Code "parent_is_attachment" -Message "$($match.parentItemKey) resolves to an attachment, not a bibliographic parent"))
                 }
+                else {
+                    $parentTitle = [string](Get-OptionalPropertyValue -Object $parentItem.data -Name "title")
+                    $metadataAudit = Get-MetadataAudit -ParentData $parentItem.data
+                    foreach ($metadataIssue in $metadataAudit.issues) {
+                        $recordIssues.Add($metadataIssue)
+                    }
+                }
             }
             catch {
                 $recordIssues.Add((New-Issue -Severity "error" -Code "zotero_item_query_failed" -Message "$($match.attachmentKey): $($_.Exception.Message)"))
@@ -401,6 +501,8 @@ foreach ($localPdf in $localPdfs) {
         attachmentId = if ($null -ne $match) { $match.attachmentId } else { $null }
         attachmentKey = if ($null -ne $match) { $match.attachmentKey } else { $null }
         parentItemKey = if ($null -ne $match) { $match.parentItemKey } else { $null }
+        parentTitle = $parentTitle
+        metadata = $metadataAudit
         cacheDirectory = if ($null -ne $match) { $match.cacheDirectory } else { $null }
         fullMdPath = if ($null -ne $match) { $match.fullMdPath } else { $null }
         sourceFilename = if ($null -ne $match) { $match.sourceFilename } else { $null }
@@ -419,6 +521,25 @@ foreach ($entry in $matchedAttachmentCounts.GetEnumerator()) {
     }
 }
 
+if ($RequireAllCaches) {
+    foreach ($candidate in $cacheCandidates) {
+        $matchedCount = if ($matchedAttachmentCounts.ContainsKey($candidate.attachmentKey)) {
+            [int]$matchedAttachmentCounts[$candidate.attachmentKey]
+        }
+        else {
+            0
+        }
+        if ($matchedCount -gt 0) {
+            continue
+        }
+
+        $globalIssues.Add((New-Issue -Severity "error" -Code "missing_local_pdf_for_cache" -Message "No PDF under PaperRoot matches MinerU attachmentKey $($candidate.attachmentKey)"))
+        foreach ($candidateIssue in $candidate.issues) {
+            $globalIssues.Add($candidateIssue)
+        }
+    }
+}
+
 $recordErrorCount = @(
     $records |
         ForEach-Object { $_.issues } |
@@ -428,6 +549,24 @@ $globalErrorCount = @($globalIssues | Where-Object { $_.severity -eq "error" }).
 $blockingErrorCount = $recordErrorCount + $globalErrorCount
 $okCount = @($records | Where-Object { $_.status -eq "ok" }).Count
 $renameRequiredCount = @($records | Where-Object { $_.status -eq "rename_required" }).Count
+$metadataAuditedCount = @($records | Where-Object { $null -ne $_.metadata }).Count
+$metadataResearchRequiredCount = @(
+    $records |
+        Where-Object { $null -ne $_.metadata } |
+        ForEach-Object { $_.metadata.unresolvedFields }
+).Count
+$documentedMetadataGapCount = @(
+    $records |
+        Where-Object { $null -ne $_.metadata } |
+        ForEach-Object { $_.metadata.documentedUnavailableFields }
+).Count
+$unmatchedCacheCount = @(
+    $cacheCandidates |
+        Where-Object {
+            -not $matchedAttachmentCounts.ContainsKey($_.attachmentKey) -or
+            [int]$matchedAttachmentCounts[$_.attachmentKey] -eq 0
+        }
+).Count
 
 $result = [pscustomobject]@{
     generatedAt = (Get-Date).ToUniversalTime().ToString("o")
@@ -441,6 +580,7 @@ $result = [pscustomobject]@{
         hashVerificationRequested = -not $SkipHash
         apiVerificationRequested = -not $SkipApi
         zoteroApiReachable = $apiAvailable
+        requireAllCaches = [bool]$RequireAllCaches
         allowIncomplete = [bool]$AllowIncomplete
     }
     summary = [pscustomobject]@{
@@ -450,9 +590,14 @@ $result = [pscustomobject]@{
         mappedRecordCount = @($records | Where-Object { $null -ne $_.attachmentKey }).Count
         okCount = $okCount
         renameRequiredCount = $renameRequiredCount
+        metadataAuditedCount = $metadataAuditedCount
+        metadataResearchRequiredCount = $metadataResearchRequiredCount
+        documentedMetadataGapCount = $documentedMetadataGapCount
+        unmatchedCacheCount = $unmatchedCacheCount
         blockingErrorCount = $blockingErrorCount
     }
     records = $records
+    caches = $cacheCandidates
     globalIssues = $globalIssues
 }
 

@@ -1,131 +1,128 @@
 ---
 name: zotero-paper-updater
-description: Maintain a local Zotero paper workspace backed by llm-for-zotero MinerU Markdown. Use when the user asks to update Zotero papers, fill missing bibliographic metadata, map MinerU full.md files to Zotero attachments, rename local PDFs to the current Zotero attachment names, keep paper knowledge notes, validate one-to-one mappings, or says 更新 Zotero paper、论文文件名与 Zotero 一致、以后读 MD 不读 PDF、_llm_source.json、attachmentKey、llm-for-zotero-mineru.
+description: Maintain and read a local Zotero library backed by llm-for-zotero MinerU Markdown. Use whenever the user asks to read, summarize, compare, or analyze a Zotero paper; fill missing dates, authors, venues, DOI, pages, or other bibliographic metadata; map MinerU full.md files to Zotero attachments; repair cache provenance; rename local paper copies; or says 更新 Zotero paper、论文信息不要留空、以后读 MD 不读 PDF、E:\ZoteroData、_llm_source.json、attachmentKey、llm-for-zotero-mineru. Prefer a validated full.md over PDF text extraction and sync verified metadata back to the Zotero parent item.
 ---
 
 # Zotero Paper Updater
 
-Treat this as a synchronization workflow with four distinct sources of truth:
+Treat the task as synchronization among four distinct sources of truth:
 
 - Zotero parent item: bibliographic identity and metadata.
-- Zotero attachment key: stable link between the PDF attachment and MinerU cache.
+- Zotero attachment key: stable link between the PDF attachment and MinerU provenance.
 - Current Zotero storage PDF basename: canonical filename for the user's local paper copy.
-- MinerU full.md: paper-content source after cache validation.
+- Validated MinerU `full.md`: default paper-content source.
 
-Never collapse these roles into the downloaded filename, a numeric MinerU directory, or the Markdown's first heading.
+Do not collapse these roles into the downloaded filename, numeric MinerU directory, `sourceFilename`, or the Markdown's first heading.
 
-## Resolve the workspace
+## Resolve this environment
 
 Resolve and report these paths before acting:
 
 - Paper root: the folder named by the user; otherwise the current working directory.
-- Zotero data directory: obtain it from Zotero status/profile information or an explicit user-provided path. Do not hardcode a machine-specific default.
-- MinerU root: ZoteroDataDir\llm-for-zotero-mineru.
-- Notes root: PaperRoot\notes.
+- Zotero data directory: an explicit user path, then `ZOTERO_DATA_DIR`, then `E:\ZoteroData` when it exists; otherwise obtain it from Zotero status/profile information.
+- MinerU root: `ZoteroDataDir\llm-for-zotero-mineru`.
+- Zotero storage root: `ZoteroDataDir\storage`.
+- Notes root: `PaperRoot\notes`.
 
-Use the companion Zotero skill for connectivity and read-only library queries. Start with its status --json command. If the API is disabled and the user asked to operate Zotero, enable it and restart Zotero, then probe again.
+Use the companion Zotero skill for connectivity and read-only library queries. Start with its `status --json` command. If the API is disabled and the user asked to operate Zotero, enable it and restart Zotero, then probe again.
 
-Use computer-use for supported Zotero UI writes. The local Zotero API is read-only in this setup; do not invent PATCH or PUT routes.
+The upstream plugin is [yilewang/llm-for-zotero](https://github.com/yilewang/llm-for-zotero). The implementation reference was verified against v3.8.26, but that is a baseline rather than a permanent latest-version claim. Run `scripts/check-llm-for-zotero-version.ps1 -RequireLatest` at the start of every MinerU workflow. If the check cannot reach the official update manifest, report that freshness is unverified. If an update is available, update through Zotero's Add-ons UI when the request authorizes it, then rerun the check before relying on version-specific behavior.
+
+Read `references/llm-for-zotero-implementation.md` before diagnosing cache drift, reparsing, restore/sync behavior, or a plugin-version change.
 
 ## Choose the action boundary
 
 - For 检查、梳理、能否对应、审计: stay read-only.
-- For 更新、补齐、同步、重命名: apply only the requested Zotero metadata and local filename changes, then verify them.
-- Never treat a metadata update as permission to replace attachments, delete caches, or remove duplicate files.
+- For 研读、总结、比较: read only validated MinerU Markdown and Zotero metadata.
+- For 更新、补齐、同步、重命名: apply the requested Zotero metadata and local filename changes, then verify them.
+- Never treat a metadata update as permission to replace attachments, delete caches, remove duplicate files, or edit `zotero.sqlite`.
 
-A read-only one-to-one audit may inspect Zotero storage filenames, query the local
-API, and hash PDF bytes unless the user explicitly forbids those checks. These
-operations do not read PDF content and are required to prove identity.
+A read-only one-to-one audit may inspect Zotero storage filenames, query the local API, and hash PDF bytes. Hashing proves identity without reading PDF content.
 
 ## Run the workflow
 
-1. Inventory Zotero parent items and PDF attachments.
-2. Run scripts/audit-paper-links.ps1 with -AllowIncomplete for the initial audit.
-3. Map every cache through _llm_source.json:
-   - attachmentKey is the primary key.
-   - parentItemKey identifies the bibliographic parent.
-   - attachmentId and the numeric directory are diagnostic only.
-   - sourceFilename is a parse-time snapshot and may be stale after a rename.
-4. Validate full.md, manifest.json, and _llm_source.json before reading content.
-5. Read manifest.json first, then only the relevant sections of full.md.
-6. Audit and enrich the Zotero parent metadata.
-7. Write metadata through Zotero's supported UI/JavaScript route, with a version check and a minimal field-level change.
-8. Let Zotero rename its own stored attachment, or use Zotero's Rename File from Parent Metadata action. Never rename a file inside ZoteroData\storage from the filesystem.
-9. Re-read the actual current storage PDF basename. Rename the local copy only after SHA-256 identity, collision, and path checks pass.
-10. Create or update notes\parentItemKey.md from assets/paper-note-template.md.
-11. Run the audit script again without -AllowIncomplete. Do not claim completion while blocking errors remain.
+1. Run the live upstream version check, then check Zotero status and inventory parent items plus PDF attachments.
+2. Resolve a requested paper with `scripts/resolve-paper-md.ps1`. Search Zotero first when the user supplied a title rather than a Zotero key.
+3. Run `scripts/audit-paper-links.ps1 -AllowIncomplete` for an initial paper-root audit.
+4. Map each cache through `_llm_source.json`:
+   - `attachmentKey` links provenance to the Zotero attachment and storage directory.
+   - `parentItemKey` identifies the bibliographic parent.
+   - `attachmentId` and the numeric directory are local cache locators, not durable identity.
+   - `sourceFilename` is a parse-time snapshot and may be stale after a rename.
+5. Validate `_llm_source.json`, non-empty `full.md`, and `manifest.json` before reading content.
+6. Read `manifest.json` first and then only the relevant `full.md` ranges. If the manifest has `noSections: true` or no sections, read `full.md` directly.
+7. Audit every applicable Zotero metadata field. Fill supported values from Markdown and authoritative online sources; explicitly document any field that remains formally unavailable.
+8. Write metadata through Zotero's supported UI/JavaScript route with a version check and a minimal field-level change.
+9. Let Zotero rename its own stored attachment. Never rename a file inside `ZoteroData\storage` from the filesystem.
+10. Re-read the actual storage PDF basename. Rename a local copy only after SHA-256 identity, collision, and path checks pass.
+11. Create or update `notes\parentItemKey.md` from `assets/paper-note-template.md`.
+12. Run the audit again without `-AllowIncomplete`. Do not claim completion while blocking errors or undocumented metadata gaps remain.
 
-Report non-blocking manifest locator warnings separately. A bad optional figure
-range does not erase an otherwise proven attachment-to-Markdown mapping, but that
-range must not be used to slice full.md.
+Read `references/workflow.md` for detailed gates and failure handling. Read `references/zotero-writeback.md` before any Zotero metadata write.
 
-Read references/workflow.md for the detailed gates and failure handling. Read references/zotero-writeback.md before any Zotero metadata write.
+## Metadata completeness policy
 
-## Metadata evidence policy
+Audit title, ordered creators, date, item type, container or conference, volume, issue, pages or article number, DOI, URL, language, publisher, place, and ISSN/ISBN when applicable.
 
-Audit title, ordered creators, date, item type, container, conference, volume, issue, pages or article number, DOI, URL, language, publisher, place, and ISSN when applicable.
+Use evidence in this order:
 
-Use sources in this order:
-
-1. The mapped full.md for facts printed in the paper.
+1. The mapped `full.md` for facts printed in the paper.
 2. DOI registry or publisher record.
 3. Official conference site, proceedings, or program.
 4. Author or institution page.
 5. Official preprint record.
 
-Browse for any field that may have changed or is absent locally. Require an exact identity match by title plus creators and context. Do not infer bibliographic values from:
+Browse whenever an applicable field is missing locally or may have changed. Require an exact identity match by title, ordered creators, and publication context. Do not infer values from downloaded filenames, Zotero `dateAdded`, file timestamps, the latest year in references, MinerU page count, conference Paper ID, or a title-similar result with mismatched creators.
 
-- downloaded filenames;
-- Zotero dateAdded or file timestamps;
-- the latest year in references;
-- MinerU page count;
-- conference Paper ID;
-- a title-similar web result with mismatched creators.
+Do not silently leave a gap. For each applicable empty field, either:
 
-Leave an unavailable formal field blank. Preserve existing Extra text and append a dated, sourced status note instead of fabricating a value.
+- populate it from verified evidence; or
+- preserve the empty formal field and append a dated status line to `Extra` naming the unavailable fields and the source checked, for example: `Metadata status checked 2026-07-15: DOI, pages unavailable. Source: https://...`.
+
+This rule prevents fabrication while making every remaining gap explicit and re-checkable.
 
 ## Markdown-first rule
 
-When valid full.md exists, PDF text extraction, OCR, and PDF converters are forbidden for paper reading. Hashing a PDF to establish file identity is allowed and is not content reading.
+When valid `full.md` exists, PDF text extraction, OCR, and PDF converters are forbidden for paper reading. Do not open a PDF merely because a title is absent or a manifest has no section headings. Identity comes from Zotero keys and provenance.
 
-If full.md is missing, empty, malformed, or known to represent an older attachment:
+If `full.md` is missing, empty, malformed, or known to represent an older attachment:
 
 - report the exact failed gate;
-- wait for or explicitly trigger MinerU reparsing;
+- use llm-for-zotero's Manage Files parse/repair action or await MinerU reparsing;
 - do not silently fall back to the PDF unless the user explicitly authorizes it.
 
-A filename-only change does not invalidate MinerU. A replaced attachment can invalidate it even when the attachment key is unchanged. The plugin normally checks only whether full.md exists, so do not trust a cache hit by itself.
+The plugin's availability check treats an existing `full.md` as cached. Provenance v2 does not store the source PDF hash, so a cache hit alone cannot prove freshness after attachment replacement. A filename-only change does not invalidate MinerU.
 
 ## Filename synchronization
 
-The desired local filename is the exact basename currently present in ZoteroData\storage\attachmentKey after Zotero has finished its own rename.
+The desired local filename is the exact basename currently present in `ZoteroData\storage\attachmentKey` after Zotero finishes its own rename.
 
 Before renaming a local file:
 
 - prove it is the same attachment by SHA-256;
-- resolve both paths to absolute paths under PaperRoot;
+- resolve source and target under `PaperRoot`;
 - require one source and no conflicting target;
 - stop if a target exists with a different hash;
 - do not overwrite, merge, or delete files.
 
-After renaming, recompute SHA-256 and rerun the strict audit. A stale sourceFilename in _llm_source.json is expected and must not break the mapping.
+After renaming, recompute SHA-256 and rerun the strict audit. A stale `sourceFilename` is expected and must not break the mapping.
 
 ## Knowledge note invariant
 
-Use parentItemKey, not title, as the note filename. Update one note in place rather than creating title-based duplicates. Record locatable Markdown headings or short anchors for claims; do not copy full.md wholesale.
+Use `parentItemKey`, not title, as the note filename. Update one note in place. Record locatable Markdown headings or short anchors for claims; do not copy `full.md` wholesale.
 
 ## Completion report
 
 Report:
 
-- Zotero connectivity;
-- resolved roots;
+- Zotero and llm-for-zotero connectivity/version;
+- resolved paper, Zotero data, MinerU, storage, and notes roots;
 - counts of parents, attachments, caches, and local PDFs;
-- the attachmentKey to parentItemKey to full.md mapping;
-- metadata fields changed and sources used;
+- the `attachmentKey -> parentItemKey -> full.md` mapping;
+- cache-health findings and whether PDF content reads remained zero;
+- metadata fields changed, sources used, and explicitly documented unavailable fields;
 - local renames with pre/post hashes;
 - note files created or updated;
-- unresolved metadata and cache problems;
 - final strict-audit result.
 
-Do not say the workflow is complete unless mappings are unique, Markdown caches are valid, local names equal current Zotero attachment names, and verified hashes match.
+Do not say the workflow is complete unless mappings are unique, Markdown caches are valid, local names equal current Zotero attachment names, verified hashes match, and every applicable metadata gap is either filled or explicitly documented.
