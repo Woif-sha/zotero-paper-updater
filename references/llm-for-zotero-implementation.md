@@ -11,6 +11,8 @@ Primary source:
 - Automatic parsing: https://github.com/yilewang/llm-for-zotero/blob/v3.8.26/src/modules/mineruAutoWatch.ts
 - Batch parsing: https://github.com/yilewang/llm-for-zotero/blob/v3.8.26/src/modules/mineruBatchProcessor.ts
 - Cache sync and repair: https://github.com/yilewang/llm-for-zotero/blob/v3.8.26/src/modules/contextPanel/mineruSync.ts
+- Runtime profile and native Skill paths: https://github.com/yilewang/llm-for-zotero/blob/v3.8.26/src/agent/skills/nativeSkillPaths.ts
+- Built-in Skill seeding and upgrade behavior: https://github.com/yilewang/llm-for-zotero/blob/v3.8.26/src/agent/skills/userSkills.ts
 
 Re-check these files when the installed plugin version changes. Treat the implementation below as versioned evidence, not an eternal API contract.
 
@@ -92,3 +94,17 @@ Use the plugin's Manage Files repair controls for plugin-owned repair. Do not em
 - Treat `sourceFilename` drift as normal after a Zotero rename.
 - Treat a known attachment replacement as a freshness failure because provenance cannot prove the parsed PDF hash.
 - Keep Zotero bibliographic metadata separate from MinerU's extracted content and synchronize verified fields back to the parent item.
+
+## Agent runtime 与 Skill 路径
+
+自 v3.8.26 核验的实现中，Codex 的工作目录位于
+`<ZoteroData>/agent-runtime/profile-<hash>`，原生 Skill 目录为其下的
+`.agents/skills/<skill-id>/SKILL.md`。`<hash>` 是对规范化 Zotero profile
+目录完整路径计算的 32 位 FNV-1a 值；它与 llm-for-zotero 版本无关，但会随 Zotero
+profile 路径、名称或所选 profile 改变。
+
+插件启动时会在同一目录播种和升级内置 Skill，并用内容哈希保留用户修改。因此不要把
+整个 `.agents/skills` 替换成全局目录链接，否则会夺走插件内置 Skill 的管理边界。
+全局 Skill 应逐目录链接，并在创建前拒绝同名冲突。`scripts/sync-global-skills-to-runtime.ps1`
+通过 `skills-updater` 的 `.skills-list.json` 取得全局清单，自动发现运行时目录并执行这项
+投影；切换 Zotero profile 后应重跑。
