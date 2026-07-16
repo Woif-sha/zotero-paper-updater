@@ -7,7 +7,6 @@ $ErrorActionPreference = "Stop"
 $scriptRoot = Split-Path -Parent $PSScriptRoot
 $resolverPath = Join-Path $scriptRoot "scripts\resolve-paper-md.ps1"
 $auditPath = Join-Path $scriptRoot "scripts\audit-paper-links.ps1"
-$skillSyncPath = Join-Path $scriptRoot "scripts\sync-global-skills-to-runtime.ps1"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("zotero-paper-updater-test-" + [guid]::NewGuid().ToString("N"))
 $zoteroData = Join-Path $tempRoot "ZoteroData"
 $mineruRoot = Join-Path $zoteroData "llm-for-zotero-mineru"
@@ -125,70 +124,6 @@ try {
     $skillText = [System.IO.File]::ReadAllText((Join-Path $scriptRoot "SKILL.md"))
     Assert-True -Condition $readmeText.Contains("https://github.com/yilewang/llm-for-zotero") -Message "README should name the official upstream repository"
     Assert-True -Condition $skillText.Contains("check-llm-for-zotero-version.ps1 -RequireLatest") -Message "skill should require a live upstream version check"
-
-    $globalSkillsRoot = Join-Path $tempRoot "global-skills"
-    $runtimeRoot = Join-Path $zoteroData "agent-runtime"
-    $runtimeSkillsA = Join-Path $runtimeRoot "profile-a\.agents\skills"
-    $skillA = Join-Path $globalSkillsRoot "skill-a"
-    [System.IO.Directory]::CreateDirectory($runtimeSkillsA) | Out-Null
-    [System.IO.Directory]::CreateDirectory($skillA) | Out-Null
-    [System.IO.File]::WriteAllText(
-        (Join-Path $skillA "SKILL.md"),
-        "---`nname: skill-a`ndescription: test`n---`n",
-        [System.Text.UTF8Encoding]::new($false)
-    )
-    Write-JsonFile -Path (Join-Path $globalSkillsRoot ".skills-list.json") -Value ([ordered]@{
-        version = 1
-        skillsRoot = $globalSkillsRoot
-        entries = [ordered]@{
-            "skill-a" = [ordered]@{ path = $skillA; managed = $true; autoUpdate = $true }
-        }
-    })
-
-    $firstSync = Invoke-PowerShellScript -Path $skillSyncPath -Arguments @(
-        "-GlobalSkillsRoot", $globalSkillsRoot,
-        "-RuntimeRoot", $runtimeRoot,
-        "-AsJson"
-    )
-    Assert-True -Condition ($firstSync.exitCode -eq 0) -Message "runtime skill sync should succeed"
-    $firstSyncResult = $firstSync.output | ConvertFrom-Json
-    Assert-True -Condition ($firstSyncResult.createdLinkCount -eq 1) -Message "runtime skill sync should create one link"
-    $runtimeSkillLinkA = Join-Path $runtimeSkillsA "skill-a"
-    Assert-True -Condition ((Get-Item -LiteralPath $runtimeSkillLinkA -Force).LinkType -eq "SymbolicLink") -Message "runtime projection should be a directory symbolic link"
-
-    $secondSync = Invoke-PowerShellScript -Path $skillSyncPath -Arguments @(
-        "-GlobalSkillsRoot", $globalSkillsRoot,
-        "-RuntimeRoot", $runtimeRoot,
-        "-AsJson"
-    )
-    $secondSyncResult = $secondSync.output | ConvertFrom-Json
-    Assert-True -Condition ($secondSyncResult.unchangedLinkCount -eq 1) -Message "runtime skill sync should be idempotent"
-
-    $runtimeSkillsB = Join-Path $runtimeRoot "profile-b\.agents\skills"
-    $skillB = Join-Path $globalSkillsRoot "skill-b"
-    [System.IO.Directory]::CreateDirectory((Join-Path $runtimeSkillsB "skill-a")) | Out-Null
-    [System.IO.Directory]::CreateDirectory($skillB) | Out-Null
-    [System.IO.File]::WriteAllText(
-        (Join-Path $skillB "SKILL.md"),
-        "---`nname: skill-b`ndescription: test`n---`n",
-        [System.Text.UTF8Encoding]::new($false)
-    )
-    Write-JsonFile -Path (Join-Path $globalSkillsRoot ".skills-list.json") -Value ([ordered]@{
-        version = 1
-        skillsRoot = $globalSkillsRoot
-        entries = [ordered]@{
-            "skill-a" = [ordered]@{ path = $skillA; managed = $true; autoUpdate = $true }
-            "skill-b" = [ordered]@{ path = $skillB; managed = $true; autoUpdate = $true }
-        }
-    })
-    $conflictingSync = Invoke-PowerShellScript -Path $skillSyncPath -Arguments @(
-        "-GlobalSkillsRoot", $globalSkillsRoot,
-        "-RuntimeRoot", $runtimeRoot,
-        "-AsJson"
-    )
-    Assert-True -Condition ($conflictingSync.exitCode -eq 2) -Message "runtime skill sync should reject a real-directory conflict"
-    Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $runtimeSkillsA "skill-b"))) -Message "conflict preflight should prevent partial writes"
-    Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $runtimeSkillsB "skill-b"))) -Message "conflict preflight should be atomic across profiles"
 
     $markdown = "# 方法`r`n中文😀内容"
     $first = New-CacheFixture -AttachmentId 42 -AttachmentKey "ATTACH42" -ParentItemKey "PARENT1" -Filename "paper.pdf" -Markdown $markdown

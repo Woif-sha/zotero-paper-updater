@@ -30,8 +30,6 @@ The upstream plugin is [yilewang/llm-for-zotero](https://github.com/yilewang/llm
 
 Read `references/llm-for-zotero-implementation.md` before diagnosing cache drift, reparsing, restore/sync behavior, or a plugin-version change.
 
-When the user wants global Skills available inside llm-for-zotero, run `scripts/sync-global-skills-to-runtime.ps1`. It reads the `skills-updater` registry as the canonical inventory, preserves plugin-owned Skills, and creates one directory symbolic link per registered Skill. Do not hardcode a `profile-*` suffix: it is derived from the Zotero profile path and can change when profiles move or switch. Rerun the sync after such a change or after an upstream runtime-layout change; use `-RuntimeRoot` if discovery reports that the root moved.
-
 ## Choose the action boundary
 
 - For 检查、梳理、能否对应、审计: stay read-only.
