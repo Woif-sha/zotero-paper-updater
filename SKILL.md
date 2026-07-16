@@ -18,13 +18,15 @@ Do not collapse these roles into the downloaded filename, numeric MinerU directo
 
 Resolve and report these paths before acting:
 
-- Paper root: the folder named by the user; otherwise the current working directory.
+- Paper root: the folder named by the user; otherwise `E:\paper` when it exists; only fall back to the current working directory when neither is available. This machine's managed paper library is `E:\paper`, so a generic “有新论文，更新” request must audit that directory rather than the skill repository.
 - Zotero data directory: an explicit user path, then `ZOTERO_DATA_DIR`, then `E:\ZoteroData` when it exists; otherwise obtain it from Zotero status/profile information.
 - MinerU root: `ZoteroDataDir\llm-for-zotero-mineru`.
 - Zotero storage root: `ZoteroDataDir\storage`.
 - Notes root: `PaperRoot\notes`.
 
-Use the companion Zotero skill for connectivity and read-only library queries. Start with its `status --json` command. If the API is disabled and the user asked to operate Zotero, enable it and restart Zotero, then probe again.
+Use the companion Zotero skill and Zotero local API for connectivity, inventory, parent/attachment reads, and post-write verification. Start with its `status --json` command. Direct reads do not require desktop automation. If the API is disabled and the user asked to operate Zotero, report the failed probe before attempting any UI action.
+
+Do not load or invoke `computer-use` for inventory, cache resolution, Markdown reading, metadata research, hashing, or local-file renaming. Consider UI automation only after a non-empty Zotero metadata change set has been proven necessary and the supported Zotero writeback route cannot otherwise be executed. A no-op metadata audit must remain API-only.
 
 The upstream plugin is [yilewang/llm-for-zotero](https://github.com/yilewang/llm-for-zotero). The implementation reference was verified against v3.8.26, but that is a baseline rather than a permanent latest-version claim. Run `scripts/check-llm-for-zotero-version.ps1 -RequireLatest` at the start of every MinerU workflow. If the check cannot reach the official update manifest, report that freshness is unverified. If an update is available, update through Zotero's Add-ons UI when the request authorizes it, then rerun the check before relying on version-specific behavior.
 
@@ -41,7 +43,7 @@ A read-only one-to-one audit may inspect Zotero storage filenames, query the loc
 
 ## Run the workflow
 
-1. Run the live upstream version check, then check Zotero status and inventory parent items plus PDF attachments.
+1. Resolve `PaperRoot` first, run the live upstream version check, then check Zotero status and inventory parent items plus PDF attachments. For a generic new-paper update on this machine, audit `E:\paper` before concluding that no action is needed.
 2. Resolve a requested paper with `scripts/resolve-paper-md.ps1`. Search Zotero first when the user supplied a title rather than a Zotero key.
 3. Run `scripts/audit-paper-links.ps1 -AllowIncomplete` for an initial paper-root audit.
 4. Map each cache through `_llm_source.json`:

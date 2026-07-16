@@ -37,7 +37,7 @@ MinerU 缓存由官方开源插件 [yilewang/llm-for-zotero](https://github.com/
 - 已安装并完成解析的 `llm-for-zotero` MinerU 工作流；当前实现依据 v3.8.26 核验。
 - MinerU 缓存中包含 `_llm_source.json`、`manifest.json` 和 `full.md`。
 
-本机默认数据目录是 `E:\ZoteroData`。脚本的解析顺序为：显式 `-ZoteroDataDir`、环境变量 `ZOTERO_DATA_DIR`、存在的 `E:\ZoteroData`。因此本机通常无需重复传入数据路径，换机时仍可显式覆盖。
+本机默认数据目录是 `E:\ZoteroData`，默认受管论文目录是 `E:\paper`。Skill 解析论文目录时依次使用用户显式路径、存在的 `E:\paper`、当前工作目录；解析 Zotero 数据目录时依次使用显式 `-ZoteroDataDir`、环境变量 `ZOTERO_DATA_DIR`、存在的 `E:\ZoteroData`。因此“有新论文，更新”会先审计 `E:\paper`，不会误扫 Skill 仓库。
 
 ## 上游版本实时检查
 
@@ -85,7 +85,7 @@ git clone https://github.com/Woif-sha/zotero-paper-updater.git
 研读这篇论文，只使用对应的 MinerU Markdown，不读取 PDF 正文。
 ```
 
-Skill 会根据请求区分只读审计与写入操作。仅说“检查”时不会修改 Zotero 或文件。
+Skill 会根据请求区分只读审计与写入操作。Zotero 库读取、MinerU 映射、联网核验、哈希和本地重命名都不需要桌面自动化；只有已经确认存在 Zotero 字段变更时，才进入受支持的 Zotero 写回流程。仅说“检查”时不会修改 Zotero 或文件。
 
 审计 JSON 会包含本地绝对路径、论文文件名、Zotero key 和
 SHA-256。它用于本地核验，不应提交到公开仓库。

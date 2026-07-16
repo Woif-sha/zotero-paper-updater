@@ -13,7 +13,9 @@ Before relying on plugin-specific behavior, run `scripts/check-llm-for-zotero-ve
 
 Resolve the data directory in this order: an explicit user path, `ZOTERO_DATA_DIR`, the existing local default `E:\ZoteroData`, and finally Zotero status/profile discovery. Report the resolved path rather than assuming the fallback was used.
 
-Use the local API for reads and verification. Use Zotero UI/Run JavaScript for edits. Never edit zotero.sqlite directly, even while Zotero is closed.
+Use the local API for reads and verification. Reading Zotero data never requires `computer-use`. Use Zotero UI/Run JavaScript only for a proven, non-empty metadata edit; do not initialize desktop automation during a no-op audit. Never edit zotero.sqlite directly, even while Zotero is closed.
+
+Resolve the managed paper root before inventory. Use an explicit user path first, then the existing machine default `E:\paper`, and only then the current working directory. This prevents a generic update request from accidentally auditing the skill repository.
 
 Inventory parent items and their PDF children. Keep these identifiers distinct:
 

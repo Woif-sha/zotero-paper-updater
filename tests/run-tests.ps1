@@ -157,6 +157,20 @@ try {
     Assert-True -Condition ($audited.records[0].fullMdPath -eq (Join-Path $first.cacheDir "full.md")) -Message "audit should expose the canonical full.md"
 
     $second = New-CacheFixture -AttachmentId 43 -AttachmentKey "ATTACH43" -ParentItemKey "PARENT1" -Filename "second.pdf" -Markdown "# Second"
+    [System.IO.File]::WriteAllBytes((Join-Path $paperRoot "download.pdf"), $second.pdfBytes)
+    [System.IO.File]::WriteAllBytes((Join-Path $paperRoot "second.pdf"), [System.Text.Encoding]::ASCII.GetBytes("%PDF-different"))
+    $collisionAudit = Invoke-PowerShellScript -Path $auditPath -Arguments @(
+        "-PaperRoot", $paperRoot,
+        "-ZoteroDataDir", $zoteroData,
+        "-SkipApi",
+        "-AllowIncomplete"
+    )
+    $collisionResult = $collisionAudit.output | ConvertFrom-Json
+    $collisionRecord = $collisionResult.records | Where-Object { $_.localFilename -eq "download.pdf" }
+    Assert-True -Condition ($collisionRecord.status -eq "error") -Message "rename collision should be blocking"
+    Assert-True -Condition (@($collisionRecord.issues | Where-Object { $_.code -eq "rename_target_collision" }).Count -eq 1) -Message "audit should distinguish a different-content target collision from a safe rename"
+    Remove-Item -LiteralPath (Join-Path $paperRoot "download.pdf"), (Join-Path $paperRoot "second.pdf") -Force
+
     $ambiguous = Invoke-PowerShellScript -Path $resolverPath -Arguments @(
         "-ItemKey", "PARENT1",
         "-ZoteroDataDir", $zoteroData

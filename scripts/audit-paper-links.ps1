@@ -451,7 +451,29 @@ foreach ($localPdf in $localPdfs) {
         $matchedAttachmentCounts[$match.attachmentKey]++
 
         if ($localPdf.Name -cne $match.zoteroFilename) {
-            $recordIssues.Add((New-Issue -Severity "error" -Code "rename_required" -Message "Local filename '$($localPdf.Name)' must become '$($match.zoteroFilename)'"))
+            $renameTarget = Join-Path $localPdf.DirectoryName $match.zoteroFilename
+            if (Test-Path -LiteralPath $renameTarget -PathType Leaf) {
+                if ($SkipHash) {
+                    $recordIssues.Add((New-Issue -Severity "error" -Code "rename_target_collision_unverified" -Message "Cannot rename '$($localPdf.Name)' because target '$($match.zoteroFilename)' already exists and hashing was skipped"))
+                }
+                else {
+                    try {
+                        $targetHash = Get-CachedSha256 -Path $renameTarget
+                        if ($targetHash -eq $localHash) {
+                            $recordIssues.Add((New-Issue -Severity "error" -Code "rename_target_duplicate" -Message "Cannot rename '$($localPdf.Name)' because target '$($match.zoteroFilename)' already exists with identical content; cleanup requires explicit authority"))
+                        }
+                        else {
+                            $recordIssues.Add((New-Issue -Severity "error" -Code "rename_target_collision" -Message "Cannot rename '$($localPdf.Name)' because target '$($match.zoteroFilename)' already exists with different content"))
+                        }
+                    }
+                    catch {
+                        $recordIssues.Add((New-Issue -Severity "error" -Code "rename_target_hash_failed" -Message "$renameTarget`: $($_.Exception.Message)"))
+                    }
+                }
+            }
+            else {
+                $recordIssues.Add((New-Issue -Severity "error" -Code "rename_required" -Message "Local filename '$($localPdf.Name)' must become '$($match.zoteroFilename)'"))
+            }
         }
 
         if ($apiAvailable) {
