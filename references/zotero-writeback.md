@@ -2,23 +2,24 @@
 
 ## Supported route
 
-In this setup the local API is used for reads and post-write verification. Perform metadata edits in Zotero Desktop:
+Use the Zotero local API for reads and post-write verification. Perform writes through the bearer-protected llm-for-zotero MCP endpoint at `/llm-for-zotero/mcp`:
 
-1. Open Tools → Developer → Run JavaScript.
-2. Use an async JavaScript block.
+1. Run `scripts/invoke-llm-for-zotero-mcp.ps1 -ListTools` and select the semantic write tool when it covers the operation.
+2. Use `zotero_script` only for an exact operation not covered by a semantic tool.
 3. Load the parent item by library ID and parentItemKey.
 4. Compare its current version with the version observed during the latest read.
-5. Apply only valid fields and creators.
-6. Call saveTx().
-7. Verify through the local API.
+5. Call `env.snapshot(item)` before mutation, apply only valid fields, and call `saveTx()`.
+6. Verify through the local API.
 
 Never run the block against attachmentKey.
+
+Do not print the bearer token, place it in source control, or invoke Chrome/desktop automation. The helper reads it from the active Zotero profile and sends it only to the loopback endpoint.
 
 ## Template
 
 Replace every placeholder from verified evidence. Keep fields absent from the change set out of the fields object.
 
-    const libraryID = Zotero.Libraries.userLibraryID;
+    const libraryID = env.libraryID;
     const parentItemKey = "PARENT_ITEM_KEY";
     const expectedVersion = 123;
     const itemType = "journalArticle";
@@ -52,6 +53,8 @@ Replace every placeholder from verified evidence. Keep fields absent from the ch
       );
     }
 
+    env.snapshot(item);
+
     const typeID = Zotero.ItemTypes.getID(itemType);
     if (!typeID) {
       throw new Error("Unknown item type: " + itemType);
@@ -73,13 +76,13 @@ Replace every placeholder from verified evidence. Keep fields absent from the ch
     }
 
     await item.saveTx();
-    return {
+    env.log(JSON.stringify({
       key: item.key,
       version: item.version,
       itemType: Zotero.ItemTypes.getName(item.itemTypeID),
       title: item.getField("title"),
       creators: item.getCreators()
-    };
+    }));
 
 ## Change-set rules
 

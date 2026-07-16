@@ -85,7 +85,7 @@ git clone https://github.com/Woif-sha/zotero-paper-updater.git
 研读这篇论文，只使用对应的 MinerU Markdown，不读取 PDF 正文。
 ```
 
-Skill 会根据请求区分只读审计与写入操作。整个流程禁止使用 Chrome、浏览器或桌面自动化：Zotero 通过本地 API 读取，本地 PDF、storage 和 MinerU 缓存通过 PowerShell 直接处理。若 Zotero 数据库写入没有可调用的非 UI 接口，会单独报告待处理 key，不会为了操作界面浪费 token。仅说“检查”时不会修改 Zotero 或文件。
+Skill 会根据请求区分只读审计与写入操作。整个流程禁止使用 Chrome、浏览器或桌面自动化：Zotero 通过本地 API 读取，通过 llm-for-zotero 自带的本地 MCP 写入或删除，本地 PDF、storage 和 MinerU 缓存通过 PowerShell 直接处理。仅说“检查”时不会修改 Zotero 或文件。
 
 对 DOI 或完整书目信息一致、且 MinerU Markdown 表示同一正文的重复版本，默认保留最新且健康的一套，永久删除旧本地 PDF和旧 MinerU 缓存。旧 storage 目录必须在对应 Zotero 附件记录删除后清理，否则同步会自动恢复。PDF 哈希不同但仅由下载版本、批注或 MinerU/OCR 细节造成时，不保留多个副本；不建立备份或隔离目录。
 
@@ -154,6 +154,7 @@ zotero-paper-updater/
 ├── scripts/
 │   ├── audit-paper-links.ps1
 │   ├── check-llm-for-zotero-version.ps1
+│   ├── invoke-llm-for-zotero-mcp.ps1
 │   ├── resolve-paper-md.ps1
 │   └── ZoteroPaperUpdater.Common.psm1
 └── tests/

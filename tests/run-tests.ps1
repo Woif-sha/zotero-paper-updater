@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $scriptRoot = Split-Path -Parent $PSScriptRoot
 $resolverPath = Join-Path $scriptRoot "scripts\resolve-paper-md.ps1"
 $auditPath = Join-Path $scriptRoot "scripts\audit-paper-links.ps1"
+$mcpHelperPath = Join-Path $scriptRoot "scripts\invoke-llm-for-zotero-mcp.ps1"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("zotero-paper-updater-test-" + [guid]::NewGuid().ToString("N"))
 $zoteroData = Join-Path $tempRoot "ZoteroData"
 $mineruRoot = Join-Path $zoteroData "llm-for-zotero-mineru"
@@ -122,10 +123,14 @@ try {
 
     $readmeText = [System.IO.File]::ReadAllText((Join-Path $scriptRoot "README.md"))
     $skillText = [System.IO.File]::ReadAllText((Join-Path $scriptRoot "SKILL.md"))
+    $mcpHelperText = [System.IO.File]::ReadAllText($mcpHelperPath)
     Assert-True -Condition $readmeText.Contains("https://github.com/yilewang/llm-for-zotero") -Message "README should name the official upstream repository"
     Assert-True -Condition $skillText.Contains("check-llm-for-zotero-version.ps1 -RequireLatest") -Message "skill should require a live upstream version check"
     Assert-True -Condition $skillText.Contains('Do not load or invoke `computer-use`, Chrome, or browser automation') -Message "skill should forbid UI automation"
     Assert-True -Condition $skillText.Contains("Do not create backups, quarantine folders, or fallback copies") -Message "duplicate cleanup should not retain fallback copies"
+    Assert-True -Condition $skillText.Contains("/llm-for-zotero/mcp") -Message "skill should use llm-for-zotero's local MCP write route"
+    Assert-True -Condition $mcpHelperText.Contains("codexZoteroMcpBearerToken") -Message "MCP helper should discover the local Zotero bearer token"
+    Assert-True -Condition $mcpHelperText.Contains('Remove-Item -LiteralPath $tempPath') -Message "MCP helper should remove its temporary request body"
 
     $markdown = "# 方法`r`n中文😀内容"
     $first = New-CacheFixture -AttachmentId 42 -AttachmentKey "ATTACH42" -ParentItemKey "PARENT1" -Filename "paper.pdf" -Markdown $markdown
