@@ -124,6 +124,8 @@ try {
     $skillText = [System.IO.File]::ReadAllText((Join-Path $scriptRoot "SKILL.md"))
     Assert-True -Condition $readmeText.Contains("https://github.com/yilewang/llm-for-zotero") -Message "README should name the official upstream repository"
     Assert-True -Condition $skillText.Contains("check-llm-for-zotero-version.ps1 -RequireLatest") -Message "skill should require a live upstream version check"
+    Assert-True -Condition $skillText.Contains('Do not load or invoke `computer-use`, Chrome, or browser automation') -Message "skill should forbid UI automation"
+    Assert-True -Condition $skillText.Contains("Do not create backups, quarantine folders, or fallback copies") -Message "duplicate cleanup should not retain fallback copies"
 
     $markdown = "# 方法`r`n中文😀内容"
     $first = New-CacheFixture -AttachmentId 42 -AttachmentKey "ATTACH42" -ParentItemKey "PARENT1" -Filename "paper.pdf" -Markdown $markdown

@@ -26,7 +26,7 @@ Resolve and report these paths before acting:
 
 Use the companion Zotero skill and Zotero local API for connectivity, inventory, parent/attachment reads, and post-write verification. Start with its `status --json` command. Direct reads do not require desktop automation. If the API is disabled and the user asked to operate Zotero, report the failed probe before attempting any UI action.
 
-Do not load or invoke `computer-use` for inventory, cache resolution, Markdown reading, metadata research, hashing, or local-file renaming. Consider UI automation only after a non-empty Zotero metadata change set has been proven necessary and the supported Zotero writeback route cannot otherwise be executed. A no-op metadata audit must remain API-only.
+Do not load or invoke `computer-use`, Chrome, or browser automation in this skill. Read Zotero through the local API and perform authorized local file operations directly with native PowerShell. If a Zotero database mutation has no callable non-UI API, report that database operation separately instead of spending tokens automating a browser or desktop UI.
 
 The upstream plugin is [yilewang/llm-for-zotero](https://github.com/yilewang/llm-for-zotero). The implementation reference was verified against v3.8.26, but that is a baseline rather than a permanent latest-version claim. Run `scripts/check-llm-for-zotero-version.ps1 -RequireLatest` at the start of every MinerU workflow. If the check cannot reach the official update manifest, report that freshness is unverified. If an update is available, update through Zotero's Add-ons UI when the request authorizes it, then rerun the check before relying on version-specific behavior.
 
@@ -37,7 +37,8 @@ Read `references/llm-for-zotero-implementation.md` before diagnosing cache drift
 - For 检查、梳理、能否对应、审计: stay read-only.
 - For 研读、总结、比较: read only validated MinerU Markdown and Zotero metadata.
 - For 更新、补齐、同步、重命名: apply the requested Zotero metadata and local filename changes, then verify them.
-- Never treat a metadata update as permission to replace attachments, delete caches, remove duplicate files, or edit `zotero.sqlite`.
+- Never edit `zotero.sqlite`.
+- A generic 更新 request includes cleanup of proven duplicate papers under this user's standing policy: keep one current healthy version and permanently remove redundant local PDFs, storage files, and MinerU caches. Do not create backups, quarantine folders, or fallback copies.
 
 A read-only one-to-one audit may inspect Zotero storage filenames, query the local API, and hash PDF bytes. Hashing proves identity without reading PDF content.
 
@@ -61,6 +62,14 @@ A read-only one-to-one audit may inspect Zotero storage filenames, query the loc
 12. Run the audit again without `-AllowIncomplete`. Do not claim completion while blocking errors or undocumented metadata gaps remain.
 
 Read `references/workflow.md` for detailed gates and failure handling. Read `references/zotero-writeback.md` before any Zotero metadata write.
+
+## Duplicate cleanup policy
+
+Treat records as duplicate versions of one paper only after exact bibliographic identity is established by DOI, or by title plus ordered creators and publication context. Confirm that their validated `full.md` files contain the same paper; MinerU-only differences such as a recovered title line, OCR character correction, or equation formatting do not make them different papers.
+
+Keep the newest healthy cache when it is at least as complete as the older parse. Permanently remove every redundant local PDF and redundant MinerU numeric cache directory after resolving and checking every absolute path. Remove a redundant Zotero storage directory only after its attachment record has been deleted through a callable Zotero API; otherwise Zotero sync will restore the file. Then rename the kept local PDF to the kept storage basename. Do not preserve alternate binaries merely because their PDF hashes differ when the verified paper identity and parsed content are the same.
+
+Do not use a browser or desktop automation to remove duplicate Zotero database records. When no callable Zotero write API is available, report the remaining parent and attachment keys as stale database records after local and cache cleanup. Explain that their Zotero-managed storage files cannot be permanently removed until those records are deleted; do not repeatedly delete files that Zotero will restore.
 
 ## Metadata completeness policy
 

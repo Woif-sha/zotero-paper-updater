@@ -13,7 +13,7 @@ Before relying on plugin-specific behavior, run `scripts/check-llm-for-zotero-ve
 
 Resolve the data directory in this order: an explicit user path, `ZOTERO_DATA_DIR`, the existing local default `E:\ZoteroData`, and finally Zotero status/profile discovery. Report the resolved path rather than assuming the fallback was used.
 
-Use the local API for reads and verification. Reading Zotero data never requires `computer-use`. Use Zotero UI/Run JavaScript only for a proven, non-empty metadata edit; do not initialize desktop automation during a no-op audit. Never edit zotero.sqlite directly, even while Zotero is closed.
+Use the local API for reads and verification. Never initialize `computer-use`, Chrome, or browser automation for this workflow. If a required Zotero mutation has no callable non-UI API, report the exact pending keys; never edit zotero.sqlite directly, even while Zotero is closed.
 
 Resolve the managed paper root before inventory. Use an explicit user path first, then the existing machine default `E:\paper`, and only then the current working directory. This prevents a generic update request from accidentally auditing the skill repository.
 
@@ -142,6 +142,8 @@ Do not invalidate a cache merely because sourceFilename differs from the current
 Invalidate when attachment content was replaced or the Markdown is empty/corrupt. Because provenance version 2 does not store the original PDF hash, a changed attachment cannot always be proven from the cache alone. Use known replacement history, Zotero modification evidence, or explicit user confirmation.
 
 For a required reparse, prefer a reversible quarantine of the numeric cache directory with a timestamp before invoking the plugin. Confirm the new _llm_source.json points to the same attachmentKey and the new full.md is non-empty before removing any backup. Deletion is a separate destructive action and requires explicit authority.
+
+For a proven duplicate paper, the user's standing policy is different: keep the newest healthy parse and permanently delete older duplicate local PDFs and MinerU caches. Delete Zotero-managed storage only after the corresponding attachment record is removed; otherwise sync restores it. Do not quarantine or back up duplicate versions. PDF byte differences alone do not require retention when DOI or full bibliographic identity matches and the Markdown represents the same paper with only MinerU/OCR-level differences.
 
 ## 10. Knowledge notes
 
