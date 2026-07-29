@@ -24,17 +24,37 @@ function Add-FakeCall {
     )
 }
 
-function Resolve-MaintenanceTarget {
+function Get-MaintenanceZoteroItem {
     param(
         [Parameter(Mandatory = $true)]
         [object]$Scope
     )
 
-    [pscustomobject][ordered]@{
-        parentItemKey = if ($Scope.mode -eq "itemKey") { $Scope.selector } else { "PARENT-METADATA" }
-        attachmentKey = "ATTACH-METADATA"
-        path = Join-Path $Scope.paperRoot "metadata.pdf"
-    }
+    $null = $Scope
+    @(
+        [pscustomobject][ordered]@{
+            key = "PARN2222"
+            version = 7
+            data = [pscustomobject][ordered]@{
+                key = "PARN2222"
+                version = 7
+                itemType = "journalArticle"
+                title = "Exact Paper Title"
+            }
+        },
+        [pscustomobject][ordered]@{
+            key = "ATTCH222"
+            version = 2
+            data = [pscustomobject][ordered]@{
+                key = "ATTCH222"
+                version = 2
+                itemType = "attachment"
+                parentItem = "PARN2222"
+                contentType = "application/pdf"
+                filename = "metadata.pdf"
+            }
+        }
+    )
 }
 
 function Invoke-MaintenanceTarget {
@@ -206,4 +226,4 @@ function Invoke-MaintenanceTarget {
         -WriteAdapter $writeAdapter
 }
 
-Export-ModuleMember -Function Resolve-MaintenanceTarget, Invoke-MaintenanceTarget
+Export-ModuleMember -Function Get-MaintenanceZoteroItem, Invoke-MaintenanceTarget

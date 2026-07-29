@@ -104,6 +104,11 @@ function Invoke-MetadataEntry {
 try {
     [System.IO.Directory]::CreateDirectory($paperRoot) | Out-Null
     [System.IO.Directory]::CreateDirectory($zoteroDataDir) | Out-Null
+    $storageDirectory = Join-Path $zoteroDataDir "storage\ATTCH222"
+    [System.IO.Directory]::CreateDirectory($storageDirectory) | Out-Null
+    $pdfBytes = [Text.Encoding]::ASCII.GetBytes("%PDF-metadata-enrichment")
+    [System.IO.File]::WriteAllBytes((Join-Path $storageDirectory "metadata.pdf"), $pdfBytes)
+    [System.IO.File]::WriteAllBytes((Join-Path $paperRoot "metadata.pdf"), $pdfBytes)
 
     $doiMatch = Invoke-MetadataEntry -Scenario "doi-match"
     $doiQueries = @($doiMatch.calls | Where-Object { $_.operation -eq "query" })
@@ -183,3 +188,5 @@ finally {
         Remove-Item -LiteralPath $resolvedTempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+& (Join-Path $PSScriptRoot "run-live-metadata-adapter-tests.ps1")

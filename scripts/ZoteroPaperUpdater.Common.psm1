@@ -81,6 +81,85 @@ function Get-RequiredPropertyValue {
     $property.Value
 }
 
+function Test-DeepValueEqual {
+    param(
+        [AllowNull()]
+        [object]$Left,
+
+        [AllowNull()]
+        [object]$Right
+    )
+
+    if ($null -eq $Left -or $null -eq $Right) {
+        return $null -eq $Left -and $null -eq $Right
+    }
+    if ($Left -is [string] -or $Right -is [string]) {
+        return $Left -is [string] -and
+            $Right -is [string] -and
+            [string]::Equals($Left, $Right, [StringComparison]::Ordinal)
+    }
+    $leftIsCollection = $Left -is [Collections.IEnumerable] -and
+        $Left -isnot [Collections.IDictionary]
+    $rightIsCollection = $Right -is [Collections.IEnumerable] -and
+        $Right -isnot [Collections.IDictionary]
+    if ($leftIsCollection -or $rightIsCollection) {
+        if (-not ($leftIsCollection -and $rightIsCollection)) {
+            return $false
+        }
+        $leftValues = @($Left)
+        $rightValues = @($Right)
+        if ($leftValues.Count -ne $rightValues.Count) {
+            return $false
+        }
+        for ($index = 0; $index -lt $leftValues.Count; $index++) {
+            if (-not (Test-DeepValueEqual -Left $leftValues[$index] -Right $rightValues[$index])) {
+                return $false
+            }
+        }
+        return $true
+    }
+    $leftIsObject = $Left -is [Collections.IDictionary] -or $Left -is [pscustomobject]
+    $rightIsObject = $Right -is [Collections.IDictionary] -or $Right -is [pscustomobject]
+    if ($leftIsObject -or $rightIsObject) {
+        if (-not ($leftIsObject -and $rightIsObject)) {
+            return $false
+        }
+        $leftMap = @{}
+        if ($Left -is [Collections.IDictionary]) {
+            foreach ($key in $Left.Keys) {
+                $leftMap[[string]$key] = $Left[$key]
+            }
+        }
+        else {
+            foreach ($property in $Left.PSObject.Properties) {
+                $leftMap[$property.Name] = $property.Value
+            }
+        }
+        $rightMap = @{}
+        if ($Right -is [Collections.IDictionary]) {
+            foreach ($key in $Right.Keys) {
+                $rightMap[[string]$key] = $Right[$key]
+            }
+        }
+        else {
+            foreach ($property in $Right.PSObject.Properties) {
+                $rightMap[$property.Name] = $property.Value
+            }
+        }
+        if ($leftMap.Count -ne $rightMap.Count) {
+            return $false
+        }
+        foreach ($name in $leftMap.Keys) {
+            if (-not $rightMap.ContainsKey($name) -or
+                -not (Test-DeepValueEqual -Left $leftMap[$name] -Right $rightMap[$name])) {
+                return $false
+            }
+        }
+        return $true
+    }
+    [object]::Equals($Left, $Right)
+}
+
 function Test-MineruCacheHealth {
     param(
         [Parameter(Mandatory = $true)]
@@ -201,4 +280,4 @@ function Test-MineruCacheHealth {
     }
 }
 
-Export-ModuleMember -Function New-Issue, Resolve-ZoteroDataDirectory, Get-OptionalPropertyValue, Get-RequiredPropertyValue, Test-MineruCacheHealth
+Export-ModuleMember -Function New-Issue, Resolve-ZoteroDataDirectory, Get-OptionalPropertyValue, Get-RequiredPropertyValue, Test-DeepValueEqual, Test-MineruCacheHealth

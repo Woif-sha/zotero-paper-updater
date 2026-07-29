@@ -118,94 +118,6 @@ function ConvertTo-MetadataSnapshot {
     [pscustomobject]$snapshot
 }
 
-function ConvertTo-MetadataPropertyMap {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$Value
-    )
-
-    $properties = [System.Collections.Generic.Dictionary[string, object]]::new(
-        [System.StringComparer]::Ordinal
-    )
-    if ($Value -is [System.Collections.IDictionary]) {
-        foreach ($key in $Value.Keys) {
-            $properties.Add([string]$key, $Value[$key])
-        }
-        return $properties
-    }
-
-    foreach ($property in $Value.PSObject.Properties) {
-        $properties.Add($property.Name, $property.Value)
-    }
-    $properties
-}
-
-function Test-MetadataValueEqual {
-    param(
-        [AllowNull()]
-        [object]$Left,
-
-        [AllowNull()]
-        [object]$Right
-    )
-
-    if ($null -eq $Left -or $null -eq $Right) {
-        return $null -eq $Left -and $null -eq $Right
-    }
-    if ($Left -is [string] -or $Right -is [string]) {
-        return $Left -is [string] -and
-            $Right -is [string] -and
-            [string]::Equals($Left, $Right, [System.StringComparison]::Ordinal)
-    }
-
-    $leftIsCollection = $Left -is [System.Collections.IEnumerable] -and
-        $Left -isnot [System.Collections.IDictionary]
-    $rightIsCollection = $Right -is [System.Collections.IEnumerable] -and
-        $Right -isnot [System.Collections.IDictionary]
-    if ($leftIsCollection -or $rightIsCollection) {
-        if (-not ($leftIsCollection -and $rightIsCollection)) {
-            return $false
-        }
-        $leftValues = @($Left)
-        $rightValues = @($Right)
-        if ($leftValues.Count -ne $rightValues.Count) {
-            return $false
-        }
-        for ($index = 0; $index -lt $leftValues.Count; $index++) {
-            if (-not (Test-MetadataValueEqual -Left $leftValues[$index] -Right $rightValues[$index])) {
-                return $false
-            }
-        }
-        return $true
-    }
-
-    $leftIsObject = $Left -is [System.Collections.IDictionary] -or $Left -is [pscustomobject]
-    $rightIsObject = $Right -is [System.Collections.IDictionary] -or $Right -is [pscustomobject]
-    if ($leftIsObject -or $rightIsObject) {
-        if (-not ($leftIsObject -and $rightIsObject)) {
-            return $false
-        }
-        $leftProperties = ConvertTo-MetadataPropertyMap -Value $Left
-        $rightProperties = ConvertTo-MetadataPropertyMap -Value $Right
-        if ($leftProperties.Count -ne $rightProperties.Count) {
-            return $false
-        }
-        foreach ($name in $leftProperties.Keys) {
-            if (-not $rightProperties.ContainsKey($name)) {
-                return $false
-            }
-            if (-not (Test-MetadataValueEqual `
-                    -Left $leftProperties[$name] `
-                    -Right $rightProperties[$name])) {
-                return $false
-            }
-        }
-        return $true
-    }
-
-    [object]::Equals($Left, $Right)
-}
-
 function Test-MetadataChanged {
     param(
         [Parameter(Mandatory = $true)]
@@ -215,7 +127,7 @@ function Test-MetadataChanged {
         [object]$After
     )
 
-    -not (Test-MetadataValueEqual -Left $Before -Right $After)
+    -not (Test-DeepValueEqual -Left $Before -Right $After)
 }
 
 function New-MetadataNoOpResult {
