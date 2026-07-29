@@ -70,7 +70,7 @@ function Get-MaintenanceZoteroItem {
                 itemType = "attachment"
                 parentItem = "PARENT22"
                 contentType = "application/pdf"
-                filename = "paper.pdf"
+                filename = "Canonical Paper.pdf"
             }
         }
     )
@@ -189,6 +189,10 @@ function Invoke-MaintenanceTarget {
                 )
             }
         }
+    }
+
+    if ([string]$env:ZPU_LIVE_ADAPTER_SCENARIO -eq "rename-source-missing") {
+        Remove-Item -LiteralPath ([string]$Target.path) -Force
     }
 
     & $script:ProductionModule {

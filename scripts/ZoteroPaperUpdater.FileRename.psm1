@@ -1,4 +1,5 @@
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.Common.psm1") -DisableNameChecking
 
 function Get-TargetPropertyValue {
     param(
@@ -15,26 +16,6 @@ function Get-TargetPropertyValue {
     }
 
     $property.Value
-}
-
-function Test-PathWithinRoot {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Root
-    )
-
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar
-    )
-    $rootPrefix = $fullRoot + [System.IO.Path]::DirectorySeparatorChar
-
-    $fullPath.Equals($fullRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Get-Sha256 {
@@ -62,40 +43,6 @@ function Test-ExactFilePath {
     @([System.IO.Directory]::GetFiles($parentPath) | Where-Object {
         [System.IO.Path]::GetFileName($_) -ceq $expectedLeaf
     }).Count -eq 1
-}
-
-function Assert-PathChainHasNoReparsePoint {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-
-    $currentPath = [System.IO.Path]::GetFullPath($Path)
-    while (-not [string]::IsNullOrWhiteSpace($currentPath)) {
-        $item = $null
-        try {
-            $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop
-        }
-        catch [System.Management.Automation.ItemNotFoundException] {
-            $item = $null
-        }
-
-        if (
-            $null -ne $item -and (
-                ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
-                -not [string]::IsNullOrWhiteSpace([string]$item.LinkType)
-            )
-        ) {
-            $exception = [System.IO.IOException]::new(
-                "Path '$([System.IO.Path]::GetFullPath($Path))' traverses reparse point '$currentPath'."
-            )
-            $exception.Data["ZpuIssueCode"] = "path_contains_reparse_point"
-            throw $exception
-        }
-
-        $parent = [System.IO.Directory]::GetParent($currentPath)
-        $currentPath = if ($null -eq $parent) { $null } else { $parent.FullName }
-    }
 }
 
 function Get-PathValidationIssueCode {

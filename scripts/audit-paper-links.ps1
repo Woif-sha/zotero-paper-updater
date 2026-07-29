@@ -200,31 +200,6 @@ function Get-MetadataAudit {
     }
 }
 
-function Test-PathWithinRoot {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Root
-    )
-
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar
-    )
-    $rootPrefix = $fullRoot + [System.IO.Path]::DirectorySeparatorChar
-
-    $fullPath.Equals(
-        $fullRoot,
-        [System.StringComparison]::OrdinalIgnoreCase
-    ) -or $fullPath.StartsWith(
-        $rootPrefix,
-        [System.StringComparison]::OrdinalIgnoreCase
-    )
-}
-
 $resolvedPaperRoot = Resolve-ExistingDirectory -Path $PaperRoot -Label "Paper root"
 $resolvedZoteroDataDir = Resolve-ZoteroDataDirectory -RequestedPath $ZoteroDataDir
 $mineruRoot = Join-Path $resolvedZoteroDataDir "llm-for-zotero-mineru"

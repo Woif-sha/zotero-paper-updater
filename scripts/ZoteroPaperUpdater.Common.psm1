@@ -81,6 +81,69 @@ function Get-RequiredPropertyValue {
     $property.Value
 }
 
+function Test-PathWithinRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar
+    )
+    $rootPrefix = $fullRoot + [IO.Path]::DirectorySeparatorChar
+    $fullPath.Equals($fullRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-PathWithoutReparsePoint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $currentPath = [IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrWhiteSpace($currentPath)) {
+        $item = $null
+        try {
+            $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop
+        }
+        catch [Management.Automation.ItemNotFoundException] {
+            $item = $null
+        }
+        if ($null -ne $item -and (
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not [string]::IsNullOrWhiteSpace([string]$item.LinkType)
+        )) {
+            return $false
+        }
+        $parent = [IO.Directory]::GetParent($currentPath)
+        $currentPath = if ($null -eq $parent) { $null } else { $parent.FullName }
+    }
+    $true
+}
+
+function Assert-PathChainHasNoReparsePoint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (Test-PathWithoutReparsePoint -Path $Path) {
+        return
+    }
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $exception = [IO.IOException]::new(
+        "Path '$fullPath' traverses a reparse point."
+    )
+    $exception.Data["ZpuIssueCode"] = "path_contains_reparse_point"
+    throw $exception
+}
+
 function Test-DeepValueEqual {
     param(
         [AllowNull()]
@@ -280,4 +343,13 @@ function Test-MineruCacheHealth {
     }
 }
 
-Export-ModuleMember -Function New-Issue, Resolve-ZoteroDataDirectory, Get-OptionalPropertyValue, Get-RequiredPropertyValue, Test-DeepValueEqual, Test-MineruCacheHealth
+Export-ModuleMember -Function `
+    New-Issue, `
+    Resolve-ZoteroDataDirectory, `
+    Get-OptionalPropertyValue, `
+    Get-RequiredPropertyValue, `
+    Test-PathWithinRoot, `
+    Test-PathWithoutReparsePoint, `
+    Assert-PathChainHasNoReparsePoint, `
+    Test-DeepValueEqual, `
+    Test-MineruCacheHealth

@@ -44,6 +44,78 @@ function Invoke-PowerShellScript {
     }
 }
 
+function Invoke-TestScriptGroup {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Path,
+
+        [int]$TimeoutMilliseconds = 60000
+    )
+
+    $runs = [Collections.Generic.List[object]]::new()
+    try {
+        foreach ($testPath in $Path) {
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = (Get-Command pwsh -ErrorAction Stop).Source
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.ArgumentList.Add("-NoProfile")
+            $startInfo.ArgumentList.Add("-File")
+            $startInfo.ArgumentList.Add($testPath)
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) {
+                throw "Failed to start test script '$testPath'."
+            }
+            $runs.Add([pscustomobject]@{
+                path = $testPath
+                process = $process
+                deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+                stdout = $process.StandardOutput.ReadToEndAsync()
+                stderr = $process.StandardError.ReadToEndAsync()
+            })
+        }
+
+        foreach ($run in $runs) {
+            $remaining = [int][Math]::Max(
+                0,
+                ($run.deadline - [DateTime]::UtcNow).TotalMilliseconds
+            )
+            if (-not $run.process.HasExited -and (
+                $remaining -eq 0 -or -not $run.process.WaitForExit($remaining)
+            )) {
+                throw "Test script '$($run.path)' exceeded $TimeoutMilliseconds milliseconds."
+            }
+            $run.process.WaitForExit()
+        }
+
+        foreach ($run in $runs) {
+            $stdout = $run.stdout.GetAwaiter().GetResult().Trim()
+            $stderr = $run.stderr.GetAwaiter().GetResult().Trim()
+            if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+                Write-Output $stdout
+            }
+            if ($run.process.ExitCode -ne 0) {
+                throw "Test script '$($run.path)' failed with exit code $($run.process.ExitCode): $stderr"
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+                Write-Warning $stderr
+            }
+        }
+    }
+    finally {
+        foreach ($run in $runs) {
+            if (-not $run.process.HasExited) {
+                $run.process.Kill($true)
+                $run.process.WaitForExit()
+            }
+            $run.process.Dispose()
+        }
+    }
+}
+
 function Write-JsonFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -221,6 +293,9 @@ finally {
     }
 }
 
-& (Join-Path $PSScriptRoot "run-maintenance-entry-tests.ps1")
-& (Join-Path $PSScriptRoot "run-metadata-enrichment-tests.ps1")
+Invoke-TestScriptGroup -Path @(
+    (Join-Path $PSScriptRoot "run-maintenance-entry-tests.ps1"),
+    (Join-Path $PSScriptRoot "run-metadata-enrichment-tests.ps1"),
+    (Join-Path $PSScriptRoot "run-live-rename-aggregation-tests.ps1")
+)
 exit 0

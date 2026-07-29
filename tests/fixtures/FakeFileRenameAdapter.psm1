@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 
 $script:repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $script:fileRenameModulePath = Join-Path $script:repoRoot "scripts\ZoteroPaperUpdater.FileRename.psm1"
+$script:pendingFixtureTargets = [Collections.Generic.Queue[object]]::new()
 
 function New-TestPdf {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
@@ -150,6 +151,44 @@ function Get-FileRenameScenarioConfig {
     [pscustomobject]$scenario
 }
 
+function Get-MaintenanceZoteroItem {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Scope
+    )
+
+    $script:pendingFixtureTargets.Clear()
+    $count = if ([string]$env:ZPU_FILE_RENAME_SCENARIO -eq "missing-continues") { 2 } else { 1 }
+    $items = [Collections.Generic.List[object]]::new()
+    foreach ($ordinal in 2..($count + 1)) {
+        $parentKey = "PAR$ordinal$ordinal$ordinal$ordinal$ordinal"
+        $attachmentKey = "ATT$ordinal$ordinal$ordinal$ordinal$ordinal"
+        $storagePath = Join-Path $Scope.zoteroDataDir "storage\$attachmentKey\route-$ordinal.pdf"
+        $localPath = Join-Path $Scope.paperRoot "route-$ordinal.pdf"
+        New-TestPdf -Path $storagePath -Content "%PDF-route-$ordinal"
+        New-TestPdf -Path $localPath -Content "%PDF-route-$ordinal"
+        $items.Add([pscustomobject][ordered]@{
+            key = $parentKey
+            data = [pscustomobject][ordered]@{
+                key = $parentKey
+                itemType = "journalArticle"
+                title = "Route $ordinal"
+            }
+        })
+        $items.Add([pscustomobject][ordered]@{
+            key = $attachmentKey
+            data = [pscustomobject][ordered]@{
+                key = $attachmentKey
+                itemType = "attachment"
+                parentItem = $parentKey
+                contentType = "application/pdf"
+                filename = "route-$ordinal.pdf"
+            }
+        })
+    }
+    $items.ToArray()
+}
+
 function Resolve-MaintenanceTarget {
     param(
         [Parameter(Mandatory = $true)]
@@ -262,6 +301,16 @@ function Invoke-MaintenanceTarget {
         [object]$Scope
     )
 
+    Remove-Item -LiteralPath ([string]$Target.path) -Force
+    $routingStoragePath = [string]$Target.storagePath
+    Remove-Item -LiteralPath $routingStoragePath -Force
+    Remove-Item -LiteralPath (Split-Path -Parent $routingStoragePath) -Force
+    if ($script:pendingFixtureTargets.Count -eq 0) {
+        foreach ($fixtureTarget in @(Resolve-MaintenanceTarget -Scope $Scope)) {
+            $script:pendingFixtureTargets.Enqueue($fixtureTarget)
+        }
+    }
+    $Target = $script:pendingFixtureTargets.Dequeue()
     Import-Module -Name $script:fileRenameModulePath -Force -DisableNameChecking
     $config = Get-FileRenameScenarioConfig
     $arguments = @{
@@ -377,4 +426,4 @@ function Invoke-MaintenanceTarget {
     Invoke-LocalPdfRename @arguments
 }
 
-Export-ModuleMember -Function Resolve-MaintenanceTarget, Invoke-MaintenanceTarget
+Export-ModuleMember -Function Get-MaintenanceZoteroItem, Invoke-MaintenanceTarget

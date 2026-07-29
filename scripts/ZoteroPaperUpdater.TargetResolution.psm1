@@ -1,4 +1,5 @@
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.Common.psm1") -DisableNameChecking
 
 function Get-RequiredObjectProperty {
     param(
@@ -89,35 +90,6 @@ function Test-ZoteroItemKey {
     )
 
     $Key -cmatch "^[23456789ABCDEFGHIJKLMNPQRSTUVWXYZ]{8}$"
-}
-
-function Test-PathWithoutReparsePoint {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $currentPath = [System.IO.Path]::GetPathRoot($fullPath)
-    $relativePath = $fullPath.Substring($currentPath.Length)
-    $segments = $relativePath.Split(
-        @(
-            [System.IO.Path]::DirectorySeparatorChar,
-            [System.IO.Path]::AltDirectorySeparatorChar
-        ),
-        [System.StringSplitOptions]::RemoveEmptyEntries
-    )
-    foreach ($segment in $segments) {
-        $currentPath = Join-Path $currentPath $segment
-        if (-not (Test-Path -LiteralPath $currentPath)) {
-            continue
-        }
-        $attributes = (Get-Item -LiteralPath $currentPath -Force).Attributes
-        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            return $false
-        }
-    }
-    $true
 }
 
 function Get-StoragePdfEvidence {
@@ -274,32 +246,18 @@ function New-MaintenanceTarget {
         [string]$AttachmentKey,
 
         [AllowNull()]
-        [string]$Path
+        [string]$Path,
+
+        [AllowNull()]
+        [string]$StoragePath
     )
 
     [pscustomobject][ordered]@{
         parentItemKey = $ParentItemKey
         attachmentKey = $AttachmentKey
         path = $Path
+        storagePath = $StoragePath
     }
-}
-
-function Test-PathWithinRoot {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Root
-    )
-
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar
-    )
-    $rootPrefix = $fullRoot + [System.IO.Path]::DirectorySeparatorChar
-    $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function ConvertTo-EvidenceHashIndex {
@@ -489,7 +447,8 @@ function Resolve-StorageRelation {
         return New-ResolvedTarget -Target (New-MaintenanceTarget `
             -ParentItemKey $Relation.parentItemKey `
             -AttachmentKey $Relation.attachmentKey `
-            -Path $localMatches[0].path)
+            -Path $localMatches[0].path `
+            -StoragePath $Relation.storagePath)
     }
 
     $expectedPath = Join-Path $Scope.paperRoot $Relation.storageName
@@ -642,7 +601,8 @@ function Resolve-PathMaintenanceTarget {
     New-ResolvedTarget -Target (New-MaintenanceTarget `
         -ParentItemKey $match.parentItemKey `
         -AttachmentKey $match.attachmentKey `
-        -Path $targetPath)
+        -Path $targetPath `
+        -StoragePath $match.storagePath)
 }
 
 function Resolve-AllMaintenanceTarget {

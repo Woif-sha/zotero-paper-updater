@@ -4,6 +4,7 @@ Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.Common.psm1") -Disabl
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.MetadataEnrichment.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.CrossrefSource.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.ZoteroWriter.psm1") -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.FileRename.psm1") -DisableNameChecking
 
 $script:ZoteroApiBase = "http://127.0.0.1:23119/api/users/0"
 $script:PageSize = 100
@@ -65,6 +66,50 @@ function ConvertTo-MetadataParentSnapshot {
     }
 }
 
+function Merge-MaintenanceStageResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$StageResult
+    )
+
+    $statuses = @($StageResult | ForEach-Object {
+        [string](Get-RequiredPropertyValue -Object $_ -Name "status")
+    })
+    $status = if ($statuses -contains "failed") {
+        "failed"
+    }
+    elseif ($statuses -contains "partial") {
+        "partial"
+    }
+    else {
+        "succeeded"
+    }
+
+    [pscustomobject][ordered]@{
+        status = $status
+        actions = @($StageResult | ForEach-Object {
+            @(Get-RequiredPropertyValue -Object $_ -Name "actions")
+        })
+        issues = @($StageResult | ForEach-Object {
+            @(Get-RequiredPropertyValue -Object $_ -Name "issues")
+        })
+    }
+}
+
+function ConvertTo-FileRenameTarget {
+    param([Parameter(Mandatory = $true)][object]$Target)
+
+    $localPath = [string](Get-OptionalPropertyValue -Object $Target -Name "path")
+    $storagePath = [string](Get-OptionalPropertyValue -Object $Target -Name "storagePath")
+    [pscustomobject][ordered]@{
+        parentItemKey = Get-RequiredPropertyValue -Object $Target -Name "parentItemKey"
+        attachmentKey = Get-RequiredPropertyValue -Object $Target -Name "attachmentKey"
+        path = $localPath
+        localPdfPaths = if ([string]::IsNullOrWhiteSpace($localPath)) { @() } else { @($localPath) }
+        storagePdfPaths = if ([string]::IsNullOrWhiteSpace($storagePath)) { @() } else { @($storagePath) }
+    }
+}
+
 function Invoke-MaintenanceTarget {
     param(
         [Parameter(Mandatory = $true)][object]$Target,
@@ -102,11 +147,18 @@ function Invoke-MaintenanceTarget {
             -ReadAdapter $ReadAdapter `
             -McpAdapter $McpAdapter
     }
-    Invoke-MetadataEnrichment `
+    $metadataResult = Invoke-MetadataEnrichment `
         -ParentItem $parentSnapshot `
         -Target $Target `
         -QueryAdapter $QueryAdapter `
         -WriteAdapter $writeAdapter
+    $renameResult = Invoke-LocalPdfRename `
+        -Target (ConvertTo-FileRenameTarget -Target $Target) `
+        -PaperRoot ([string](Get-RequiredPropertyValue -Object $Scope -Name "paperRoot")) `
+        -StorageRoot (Join-Path `
+            ([string](Get-RequiredPropertyValue -Object $Scope -Name "zoteroDataDir")) `
+            "storage")
+    Merge-MaintenanceStageResult -StageResult @($metadataResult, $renameResult)
 }
 
 Export-ModuleMember -Function Get-MaintenanceZoteroItem, Invoke-MaintenanceTarget
