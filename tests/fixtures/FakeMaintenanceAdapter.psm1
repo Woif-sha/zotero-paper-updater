@@ -1,6 +1,31 @@
 Set-StrictMode -Version Latest
 
-function Resolve-MaintenanceTarget {
+function Get-FakeZoteroItemPair {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ParentKey,
+
+        [Parameter(Mandatory = $true)]
+        [string]$AttachmentKey
+    )
+
+    @(
+        [pscustomobject]@{
+            key = $ParentKey
+            data = [pscustomobject]@{ itemType = "journalArticle"; title = "Fake paper $ParentKey" }
+        },
+        [pscustomobject]@{
+            key = $AttachmentKey
+            data = [pscustomobject]@{
+                itemType = "attachment"
+                parentItem = $ParentKey
+                contentType = "application/pdf"
+            }
+        }
+    )
+}
+
+function Get-MaintenanceZoteroItem {
     param(
         [Parameter(Mandatory = $true)]
         [object]$Scope
@@ -9,59 +34,135 @@ function Resolve-MaintenanceTarget {
     if ($env:ZPU_FAKE_SCENARIO -eq "run-failure") {
         throw "Fake adapter could not enumerate targets."
     }
-    if ($env:ZPU_FAKE_SCENARIO -eq "sparse-target") {
-        return [pscustomobject][ordered]@{
-            parentItemKey = "PARENT-SPARSE"
+    $scenarioPairs = @{
+        "target-blocked" = @(
+            @("PARENT-BLOCKED", "A2B3C4D5"),
+            @("PARENT-CONTINUED", "E6F7G8H9")
+        )
+        "progress-then-crash" = @(
+            @("PARENT-CHANGED", "J2K3L4M5"),
+            @("PARENT-CRASHED", "N6P7Q8R9")
+        )
+        "progress-then-invalid-result" = @(
+            @("PARENT-VALID", "S2T3U4V5"),
+            @("PARENT-INVALID", "W6X7Y8Z9")
+        )
+    }
+    if ($scenarioPairs.ContainsKey([string]$env:ZPU_FAKE_SCENARIO)) {
+        return @(
+            foreach ($pair in $scenarioPairs[[string]$env:ZPU_FAKE_SCENARIO]) {
+                Get-FakeZoteroItemPair -ParentKey $pair[0] -AttachmentKey $pair[1]
+            }
+        )
+    }
+    if ($env:ZPU_FAKE_SCENARIO -eq "non-pdf-attachment") {
+        return @(
+            [pscustomobject]@{
+                key = "PARENT-NONPDF"
+                data = [pscustomobject]@{ itemType = "webpage"; title = "Not a PDF" }
+            },
+            [pscustomobject]@{
+                key = "Z2Y3X4W5"
+                data = [pscustomobject]@{
+                    itemType = "attachment"
+                    parentItem = "PARENT-NONPDF"
+                    contentType = "text/html"
+                }
+            }
+        )
+    }
+    if ($env:ZPU_FAKE_SCENARIO -eq "orphan-attachment") {
+        return [pscustomobject]@{
+            key = "Z3X5V7T9"
+            data = [pscustomobject]@{
+                itemType = "attachment"
+                parentItem = "PARENT-MISSING"
+                contentType = "application/pdf"
+            }
         }
     }
-    if ($env:ZPU_FAKE_SCENARIO -eq "target-blocked") {
+    if ($env:ZPU_FAKE_SCENARIO -eq "invalid-attachment-key") {
         return @(
-            [pscustomobject][ordered]@{
-                parentItemKey = "PARENT-BLOCKED"
-                attachmentKey = "ATTACH-BLOCKED"
-                path = Join-Path $Scope.paperRoot "blocked.pdf"
+            [pscustomobject]@{
+                key = "PARENT-BADKEY"
+                data = [pscustomobject]@{ itemType = "journalArticle"; title = "Unsafe key" }
             },
-            [pscustomobject][ordered]@{
-                parentItemKey = "PARENT-CONTINUED"
-                attachmentKey = "ATTACH-CONTINUED"
-                path = Join-Path $Scope.paperRoot "continued.pdf"
+            [pscustomobject]@{
+                key = "..\BAD"
+                data = [pscustomobject]@{
+                    itemType = "attachment"
+                    parentItem = "PARENT-BADKEY"
+                    contentType = "application/pdf"
+                }
             }
         )
     }
-    if ($env:ZPU_FAKE_SCENARIO -eq "progress-then-crash") {
+    if ($env:ZPU_FAKE_SCENARIO -eq "multiple-parent-pdfs") {
         return @(
-            [pscustomobject][ordered]@{
-                parentItemKey = "PARENT-CHANGED"
-                attachmentKey = "ATTACH-CHANGED"
-                path = Join-Path $Scope.paperRoot "changed.pdf"
-            },
-            [pscustomobject][ordered]@{
-                parentItemKey = "PARENT-CRASHED"
-                attachmentKey = "ATTACH-CRASHED"
-                path = Join-Path $Scope.paperRoot "crashed.pdf"
+            Get-FakeZoteroItemPair -ParentKey "PARENT-MULTI" -AttachmentKey "R2T4V6X8"
+            [pscustomobject]@{
+                key = "S3U5W7Y9"
+                data = [pscustomobject]@{
+                    itemType = "attachment"
+                    parentItem = "PARENT-MULTI"
+                    contentType = "application/pdf"
+                }
             }
         )
     }
-    if ($env:ZPU_FAKE_SCENARIO -eq "progress-then-invalid-result") {
+    if ($env:ZPU_FAKE_SCENARIO -eq "all-mixed") {
         return @(
-            [pscustomobject][ordered]@{
-                parentItemKey = "PARENT-VALID"
-                attachmentKey = "ATTACH-VALID"
-                path = Join-Path $Scope.paperRoot "valid.pdf"
+            Get-FakeZoteroItemPair -ParentKey "PARENT-GOOD" -AttachmentKey "A3C5E7G9"
+            Get-FakeZoteroItemPair -ParentKey "PARENT-MISSING" -AttachmentKey "B2D4F6H8"
+            Get-FakeZoteroItemPair -ParentKey "PARENT-CONFLICT" -AttachmentKey "J3L5N7Q9"
+        )
+    }
+    if ($env:ZPU_FAKE_SCENARIO -eq "ambiguous-path") {
+        return @(
+            [pscustomobject]@{
+                key = "PARENT-A"
+                data = [pscustomobject]@{ itemType = "journalArticle"; title = "First fake paper" }
             },
-            [pscustomobject][ordered]@{
-                parentItemKey = "PARENT-INVALID"
-                attachmentKey = "ATTACH-INVALID"
-                path = Join-Path $Scope.paperRoot "invalid.pdf"
+            [pscustomobject]@{
+                key = "STUVWXYZ"
+                data = [pscustomobject]@{
+                    itemType = "attachment"
+                    parentItem = "PARENT-A"
+                    contentType = "application/pdf"
+                }
+            },
+            [pscustomobject]@{
+                key = "PARENT-B"
+                data = [pscustomobject]@{ itemType = "journalArticle"; title = "Second fake paper" }
+            },
+            [pscustomobject]@{
+                key = "23456789"
+                data = [pscustomobject]@{
+                    itemType = "attachment"
+                    parentItem = "PARENT-B"
+                    contentType = "application/pdf"
+                }
             }
         )
     }
 
+    $parentKey = if ($Scope.selector -in @("PARENT9", "JKLMNPQR")) { "PARENT9" } else { "PARENT1" }
+    $attachmentKey = if ($parentKey -eq "PARENT9") { "JKLMNPQR" } else { "ABCDEFGH" }
     @(
-        [pscustomobject][ordered]@{
-            parentItemKey = if ($Scope.mode -eq "itemKey") { $Scope.selector } else { "PARENT1" }
-            attachmentKey = "ATTACH1"
-            path = if ($Scope.mode -eq "path") { $Scope.selector } else { Join-Path $Scope.paperRoot "paper.pdf" }
+        [pscustomobject]@{
+            key = $parentKey
+            data = [pscustomobject]@{
+                itemType = "journalArticle"
+                title = "Fake paper"
+            }
+        },
+        [pscustomobject]@{
+            key = $attachmentKey
+            data = [pscustomobject]@{
+                itemType = "attachment"
+                parentItem = $parentKey
+                contentType = "application/pdf"
+            }
         }
     )
 }
@@ -193,4 +294,4 @@ function Invoke-MaintenanceTarget {
     }
 }
 
-Export-ModuleMember -Function Resolve-MaintenanceTarget, Invoke-MaintenanceTarget
+Export-ModuleMember -Function Get-MaintenanceZoteroItem, Invoke-MaintenanceTarget
