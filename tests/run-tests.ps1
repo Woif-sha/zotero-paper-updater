@@ -220,3 +220,5 @@ finally {
         Remove-Item -LiteralPath $resolvedTempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+& (Join-Path $PSScriptRoot "run-maintenance-entry-tests.ps1")
