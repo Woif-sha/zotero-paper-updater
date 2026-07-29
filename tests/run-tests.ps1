@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version Latest
@@ -134,6 +134,11 @@ function Write-JsonFile {
 }
 
 function New-CacheFixture {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "Creates an isolated test fixture under the per-run temporary directory."
+    )]
     param(
         [Parameter(Mandatory = $true)]
         [int]$AttachmentId,
@@ -296,6 +301,9 @@ finally {
 Invoke-TestScriptGroup -Path @(
     (Join-Path $PSScriptRoot "run-maintenance-entry-tests.ps1"),
     (Join-Path $PSScriptRoot "run-metadata-enrichment-tests.ps1"),
-    (Join-Path $PSScriptRoot "run-live-rename-aggregation-tests.ps1")
+    (Join-Path $PSScriptRoot "run-live-rename-aggregation-tests.ps1"),
+    (Join-Path $PSScriptRoot "run-duplicate-cleanup-tests.ps1"),
+    (Join-Path $PSScriptRoot "run-live-duplicate-cleanup-tests.ps1"),
+    (Join-Path $PSScriptRoot "run-live-duplicate-cleanup-adapter-tests.ps1")
 )
 exit 0

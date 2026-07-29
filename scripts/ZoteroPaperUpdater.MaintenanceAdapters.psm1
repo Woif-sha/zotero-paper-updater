@@ -5,6 +5,11 @@ Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.MetadataEnrichment.ps
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.CrossrefSource.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.ZoteroWriter.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.FileRename.psm1") -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.DuplicateCleanup.psm1") -DisableNameChecking
+Import-Module `
+    (Join-Path $PSScriptRoot "ZoteroPaperUpdater.DuplicateCleanupLive.psm1") `
+    -DisableNameChecking `
+    -Global
 
 $script:ZoteroApiBase = "http://127.0.0.1:23119/api/users/0"
 $script:PageSize = 100
@@ -40,6 +45,35 @@ function Get-MaintenanceZoteroItem {
         $start += $page.Count
     } while ($page.Count -eq $script:PageSize)
     $items.ToArray()
+}
+
+function Get-MaintenanceTrashItem {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseSingularNouns",
+        "",
+        Justification = "Returns the current collection of Zotero Trash items."
+    )]
+    param()
+
+    $items = [Collections.Generic.List[object]]::new()
+    $start = 0
+    do {
+        $uri = "$($script:ZoteroApiBase)/items/trash?limit=$($script:PageSize)&start=$start"
+        $page = @(Invoke-ZoteroApiGet -Uri $uri)
+        foreach ($item in $page) { $items.Add($item) }
+        $start += $page.Count
+    } while ($page.Count -eq $script:PageSize)
+    $items.ToArray()
+}
+
+function Invoke-DefaultCleanupMcp {
+    param([Parameter(Mandatory = $true)][object]$Arguments)
+
+    $helperPath = Join-Path $PSScriptRoot "invoke-llm-for-zotero-mcp.ps1"
+    $responseJson = & $helperPath `
+        -ToolName "zotero_script" `
+        -ArgumentsJson ($Arguments | ConvertTo-Json -Depth 30 -Compress)
+    $responseJson | ConvertFrom-Json -Depth 100
 }
 
 function Get-LiveZoteroParent {
@@ -161,4 +195,36 @@ function Invoke-MaintenanceTarget {
     Merge-MaintenanceStageResult -StageResult @($metadataResult, $renameResult)
 }
 
-Export-ModuleMember -Function Get-MaintenanceZoteroItem, Invoke-MaintenanceTarget
+function Invoke-MaintenanceCleanup {
+    param(
+        [Parameter(Mandatory = $true)][object]$Scope,
+        [Parameter(Mandatory = $true)][object[]]$Targets,
+        [scriptblock]$ReadAllItems,
+        [scriptblock]$ReadTrashItems,
+        [scriptblock]$McpAdapter
+    )
+
+    if ($null -eq $ReadAllItems) {
+        $ReadAllItems = { param($ReadScope) Get-MaintenanceZoteroItem -Scope $ReadScope }
+    }
+    if ($null -eq $ReadTrashItems) {
+        $ReadTrashItems = { Get-MaintenanceTrashItem }
+    }
+    if ($null -eq $McpAdapter) {
+        $McpAdapter = { param($Arguments) Invoke-DefaultCleanupMcp -Arguments $Arguments }
+    }
+    $operations = Get-LiveDuplicateCleanupOperationTable `
+        -Scope $Scope `
+        -ReadAllItems $ReadAllItems `
+        -ReadTrashItems $ReadTrashItems `
+        -McpAdapter $McpAdapter
+    Invoke-MinimalDuplicateCleanup `
+        -Scope $Scope `
+        -Targets $Targets `
+        -Operations $operations
+}
+
+Export-ModuleMember -Function `
+    Get-MaintenanceZoteroItem, `
+    Invoke-MaintenanceTarget, `
+    Invoke-MaintenanceCleanup

@@ -87,6 +87,37 @@ function Invoke-PaperMaintenanceWorkflow {
         }
     }
 
+    if ($null -eq $fatalError -and
+        "Invoke-MaintenanceCleanup" -in $adapterModule.ExportedCommands.Keys) {
+        $blockedResolutionCount = @($resolutions | Where-Object { $null -ne $_.issue }).Count
+        $incompleteTargetCount = @(
+            $records |
+                Where-Object { [string]$_.adapterResult.status -ne "succeeded" }
+        ).Count
+        if ($blockedResolutionCount -eq 0 -and $incompleteTargetCount -eq 0) {
+            try {
+                $cleanupResult = Invoke-AdapterCommand `
+                    -Module $adapterModule `
+                    -Command "Invoke-MaintenanceCleanup" `
+                    -Arguments @{
+                        Scope = $Scope
+                        Targets = @($resolutions | ForEach-Object { $_.target })
+                    }
+                $cleanupActions = @($cleanupResult.actions)
+                $cleanupIssues = @($cleanupResult.issues)
+                if ($cleanupActions.Count -gt 0 -or $cleanupIssues.Count -gt 0) {
+                    $records.Add([pscustomobject][ordered]@{
+                        target = $cleanupResult.target
+                        adapterResult = $cleanupResult
+                    })
+                }
+            }
+            catch {
+                $fatalError = $_
+            }
+        }
+    }
+
     [pscustomobject][ordered]@{
         records = $records.ToArray()
         fatalError = $fatalError
