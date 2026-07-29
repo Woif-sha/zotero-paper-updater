@@ -222,3 +222,5 @@ finally {
 }
 
 & (Join-Path $PSScriptRoot "run-maintenance-entry-tests.ps1")
+& (Join-Path $PSScriptRoot "run-metadata-enrichment-tests.ps1")
+exit 0

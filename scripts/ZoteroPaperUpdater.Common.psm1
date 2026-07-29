@@ -2,6 +2,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 function New-Issue {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "Constructs an in-memory issue and does not change external state."
+    )]
     param(
         [Parameter(Mandatory = $true)]
         [ValidateSet("error", "warning")]
@@ -56,6 +61,22 @@ function Get-OptionalPropertyValue {
     $property = $Object.PSObject.Properties[$Name]
     if ($null -eq $property) {
         return $null
+    }
+    $property.Value
+}
+
+function Get-RequiredPropertyValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Object,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        throw "Object is missing required property '$Name'."
     }
     $property.Value
 }
@@ -180,4 +201,4 @@ function Test-MineruCacheHealth {
     }
 }
 
-Export-ModuleMember -Function New-Issue, Resolve-ZoteroDataDirectory, Get-OptionalPropertyValue, Test-MineruCacheHealth
+Export-ModuleMember -Function New-Issue, Resolve-ZoteroDataDirectory, Get-OptionalPropertyValue, Get-RequiredPropertyValue, Test-MineruCacheHealth

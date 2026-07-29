@@ -16,22 +16,6 @@ $script:ExitCodes = @{
     failed = 1
 }
 
-function Get-RequiredProperty {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$InputObject,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Name
-    )
-
-    $property = $InputObject.PSObject.Properties[$Name]
-    if ($null -eq $property) {
-        throw "Adapter result is missing required property '$Name'."
-    }
-    $property.Value
-}
-
 function New-MaintenanceIssue {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
         "PSUseShouldProcessForStateChangingFunctions",
@@ -146,22 +130,22 @@ function ConvertTo-MaintenanceAction {
         [object]$Action
     )
 
-    $category = [string](Get-RequiredProperty -InputObject $Action -Name "category")
+    $category = [string](Get-RequiredPropertyValue -Object $Action -Name "category")
     if ($category -notin $script:ActionCategories) {
         throw "Adapter action category '$category' is not supported."
     }
 
     foreach ($name in @("kind", "target", "before", "after", "evidence")) {
-        $null = Get-RequiredProperty -InputObject $Action -Name $name
+        $null = Get-RequiredPropertyValue -Object $Action -Name $name
     }
 
     [pscustomobject][ordered]@{
         category = $category
-        kind = Get-RequiredProperty -InputObject $Action -Name "kind"
-        target = ConvertTo-StableMaintenanceTarget -Target (Get-RequiredProperty -InputObject $Action -Name "target")
-        before = Get-RequiredProperty -InputObject $Action -Name "before"
-        after = Get-RequiredProperty -InputObject $Action -Name "after"
-        evidence = @(Get-RequiredProperty -InputObject $Action -Name "evidence")
+        kind = Get-RequiredPropertyValue -Object $Action -Name "kind"
+        target = ConvertTo-StableMaintenanceTarget -Target (Get-RequiredPropertyValue -Object $Action -Name "target")
+        before = Get-RequiredPropertyValue -Object $Action -Name "before"
+        after = Get-RequiredPropertyValue -Object $Action -Name "after"
+        evidence = @(Get-RequiredPropertyValue -Object $Action -Name "evidence")
     }
 }
 
@@ -171,21 +155,21 @@ function ConvertTo-MaintenanceAdapterIssue {
         [object]$Issue
     )
 
-    $severity = [string](Get-RequiredProperty -InputObject $Issue -Name "severity")
+    $severity = [string](Get-RequiredPropertyValue -Object $Issue -Name "severity")
     if ($severity -notin @("warning", "error")) {
         throw "Adapter issue severity '$severity' is not supported."
     }
 
     foreach ($name in @("code", "target", "message", "evidence")) {
-        $null = Get-RequiredProperty -InputObject $Issue -Name $name
+        $null = Get-RequiredPropertyValue -Object $Issue -Name $name
     }
 
     [pscustomobject][ordered]@{
         severity = $severity
-        code = Get-RequiredProperty -InputObject $Issue -Name "code"
-        target = ConvertTo-StableMaintenanceTarget -Target (Get-RequiredProperty -InputObject $Issue -Name "target")
-        message = Get-RequiredProperty -InputObject $Issue -Name "message"
-        evidence = @(Get-RequiredProperty -InputObject $Issue -Name "evidence")
+        code = Get-RequiredPropertyValue -Object $Issue -Name "code"
+        target = ConvertTo-StableMaintenanceTarget -Target (Get-RequiredPropertyValue -Object $Issue -Name "target")
+        message = Get-RequiredPropertyValue -Object $Issue -Name "message"
+        evidence = @(Get-RequiredPropertyValue -Object $Issue -Name "evidence")
     }
 }
 
@@ -198,18 +182,18 @@ function ConvertTo-MaintenanceTargetResult {
         [object]$AdapterResult
     )
 
-    $status = [string](Get-RequiredProperty -InputObject $AdapterResult -Name "status")
+    $status = [string](Get-RequiredPropertyValue -Object $AdapterResult -Name "status")
     if ($status -notin $script:TargetStatuses) {
         throw "Adapter target status '$status' is not supported."
     }
 
     $actions = @(
-        foreach ($action in @(Get-RequiredProperty -InputObject $AdapterResult -Name "actions")) {
+        foreach ($action in @(Get-RequiredPropertyValue -Object $AdapterResult -Name "actions")) {
             ConvertTo-MaintenanceAction -Action $action
         }
     )
     $issues = @(
-        foreach ($issue in @(Get-RequiredProperty -InputObject $AdapterResult -Name "issues")) {
+        foreach ($issue in @(Get-RequiredPropertyValue -Object $AdapterResult -Name "issues")) {
             ConvertTo-MaintenanceAdapterIssue -Issue $issue
         }
     )
@@ -354,6 +338,9 @@ $scope = [pscustomobject][ordered]@{
 }
 
 try {
+    $commonModulePath = Join-Path $PSScriptRoot "ZoteroPaperUpdater.Common.psm1"
+    Import-Module -Name $commonModulePath -DisableNameChecking
+
     $parsedArguments = ConvertFrom-MaintenanceCommandLine -Arguments $CommandArguments
     $resolvedPaperRoot = if ([string]::IsNullOrWhiteSpace($parsedArguments.PaperRoot)) {
         "E:\paper"

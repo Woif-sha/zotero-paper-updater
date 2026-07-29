@@ -431,10 +431,23 @@ try {
     [System.IO.Directory]::CreateDirectory($isolatedEntryRoot) | Out-Null
     $isolatedEntryPath = Join-Path $isolatedEntryRoot "maintain-library.ps1"
     [System.IO.File]::Copy($entryPath, $isolatedEntryPath)
+    [System.IO.File]::Copy(
+        (Join-Path $repoRoot "scripts\ZoteroPaperUpdater.Common.psm1"),
+        (Join-Path $isolatedEntryRoot "ZoteroPaperUpdater.Common.psm1")
+    )
     $bootstrapFailure = Invoke-MaintenanceEntry -Arguments @() -ScriptPath $isolatedEntryPath
     Assert-True -Condition ($bootstrapFailure.exitCode -eq 1) -Message "missing workflow module should exit 1"
     Assert-True -Condition ($bootstrapFailure.json.status -eq "failed") -Message "missing workflow module should still emit failed JSON"
     Assert-True -Condition ($bootstrapFailure.json.issues[0].code -eq "maintenance_run_failed") -Message "bootstrap failure should preserve the stable run issue code"
+
+    $isolatedWithoutCommonRoot = Join-Path $tempRoot "isolated-without-common"
+    [System.IO.Directory]::CreateDirectory($isolatedWithoutCommonRoot) | Out-Null
+    $isolatedWithoutCommonPath = Join-Path $isolatedWithoutCommonRoot "maintain-library.ps1"
+    [System.IO.File]::Copy($entryPath, $isolatedWithoutCommonPath)
+    $commonBootstrapFailure = Invoke-MaintenanceEntry -Arguments @() -ScriptPath $isolatedWithoutCommonPath
+    Assert-True -Condition ($commonBootstrapFailure.exitCode -eq 1) -Message "missing common module should exit 1"
+    Assert-True -Condition ($commonBootstrapFailure.json.status -eq "failed") -Message "missing common module should still emit failed JSON"
+    Assert-True -Condition ($commonBootstrapFailure.json.issues[0].code -eq "maintenance_run_failed") -Message "missing common module should preserve the stable run issue code"
 
     $unknownArgument = Invoke-MaintenanceEntry -Arguments ($commonArguments + @("-UnknownOption", "value"))
     Assert-True -Condition ($unknownArgument.exitCode -eq 1) -Message "unsupported arguments should exit 1"
