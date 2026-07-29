@@ -22,13 +22,13 @@ The eventual public script would expose three mutually exclusive scopes:
 
 ```powershell
 # Full library: E:\paper and the associated existing Zotero items
-pwsh -File .\scripts\maintain-zotero-papers.ps1
+pwsh -File .\scripts\maintain-library.ps1
 
 # One Zotero parent or attachment
-pwsh -File .\scripts\maintain-zotero-papers.ps1 -ItemKey PARENT1
+pwsh -File .\scripts\maintain-library.ps1 -ItemKey PARENT1
 
 # One managed local PDF
-pwsh -File .\scripts\maintain-zotero-papers.ps1 -Path 'E:\paper\Example Paper.pdf'
+pwsh -File .\scripts\maintain-library.ps1 -Path 'E:\paper\Example Paper.pdf'
 ```
 
 `-PaperRoot` and `-ZoteroDataDir` remain optional environment overrides. They do not create additional operation modes. `-ItemKey` and `-Path` are mutually exclusive.
