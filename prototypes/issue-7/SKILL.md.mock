@@ -1,0 +1,33 @@
+---
+name: zotero-paper-updater
+description: Maintain existing Zotero paper records, attachments, local PDFs, and related MinerU caches. Use for full-library or single-paper maintenance, metadata completion, proven duplicate cleanup, relationship repair, and Zotero-standard filename synchronization. Do not use for reading, summarizing, comparing, or taking notes on paper content.
+---
+
+# Zotero Paper Updater
+
+Maintain existing papers already represented in Zotero or the managed paper directory. Do not import new PDFs or create Zotero parent items.
+
+## Boundaries
+
+- No arguments means maintain the existing library under `E:\paper`.
+- `-ItemKey` or `-Path` scopes the same maintenance workflow to one paper.
+- Preserve unknown metadata as empty and report it as unresolved.
+- Repair only uniquely provable relationships; otherwise report without changing them.
+- Permanently remove only strictly proven duplicates, preserving the copy with user records.
+- Never edit `zotero.sqlite`.
+- Do not read paper content, generate notes, or require a healthy MinerU `full.md` for unrelated maintenance.
+
+## Route
+
+For every supported request, read and follow `workflows/maintain-library.md`.
+
+Other skills must call `scripts/maintain-library.ps1` with `-ItemKey` or `-Path` and consume its JSON result. They must not copy this workflow or call internal scripts.
+
+## Public interface
+
+```powershell
+pwsh -NoProfile -File .\scripts\maintain-library.ps1 [-ItemKey <key> | -Path <pdf>] 
+```
+
+The command writes one JSON document to stdout. Read `references/result-contract.md` when consuming or changing that contract.
+
