@@ -312,5 +312,7 @@ Invoke-TestScriptGroup -Path @(
     (Join-Path $PSScriptRoot "run-duplicate-consolidation-tests.ps1"),
     (Join-Path $PSScriptRoot "run-live-duplicate-cleanup-tests.ps1"),
     (Join-Path $PSScriptRoot "run-live-duplicate-cleanup-adapter-tests.ps1")
+    (Join-Path $PSScriptRoot "run-cleanup-coordinator-tests.ps1")
+    (Join-Path $PSScriptRoot "run-cleanup-orphan-proof-tests.ps1")
 )
 exit 0

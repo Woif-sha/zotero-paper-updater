@@ -1,6 +1,22 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function New-ZpuTypedException {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "Constructs an exception object without changing external state."
+    )]
+    param(
+        [Parameter(Mandatory = $true)][string]$Code,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    $exception = [InvalidOperationException]::new($Message)
+    $exception.Data["ZpuIssueCode"] = $Code
+    $exception
+}
+
 function New-Issue {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
         "PSUseShouldProcessForStateChangingFunctions",
@@ -344,6 +360,7 @@ function Test-MineruCacheHealth {
 }
 
 Export-ModuleMember -Function `
+    New-ZpuTypedException, `
     New-Issue, `
     Resolve-ZoteroDataDirectory, `
     Get-OptionalPropertyValue, `

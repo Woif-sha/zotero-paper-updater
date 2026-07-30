@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.Common.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.DuplicateIdentity.psm1") -DisableNameChecking
 
-$script:TransactionSchemaVersion = 1
+$script:TransactionSchemaVersion = 2
 $script:TransactionStages = @(
     "planned",
     "preflighted",
@@ -155,12 +155,21 @@ function Assert-DuplicateCleanupCandidate {
         $pathRules.Add(@("remove $key local", (Get-RequiredNestedValue -Object $redundant -Path @("local", "path")), $Scope.paperRoot))
     }
     foreach ($rule in $pathRules) {
-        $path = [IO.Path]::GetFullPath([string]$rule[1])
-        $root = [IO.Path]::GetFullPath([string]$rule[2])
-        if (-not (Test-PathWithinRoot -Path $path -Root $root)) {
-            throw "$($rule[0]) path '$path' is outside its allowed root '$root'."
+        try {
+            $path = [IO.Path]::GetFullPath([string]$rule[1])
+            $root = [IO.Path]::GetFullPath([string]$rule[2])
+            Assert-PathChainHasNoReparsePoint -Path $path
         }
-        Assert-PathChainHasNoReparsePoint -Path $path
+        catch {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_drift_path" `
+                -Message "Cleanup path or reparse-point proof failed: $($_.Exception.Message)")
+        }
+        if (-not (Test-PathWithinRoot -Path $path -Root $root)) {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_drift_path" `
+                -Message "$($rule[0]) path '$path' is outside its allowed root '$root'.")
+        }
     }
     for ($leftIndex = 0; $leftIndex -lt $pathRules.Count; $leftIndex++) {
         for ($rightIndex = $leftIndex + 1; $rightIndex -lt $pathRules.Count; $rightIndex++) {
@@ -168,7 +177,9 @@ function Assert-DuplicateCleanupCandidate {
             $rightPath = [IO.Path]::GetFullPath([string]$pathRules[$rightIndex][1])
             if ((Test-PathWithinRoot -Path $leftPath -Root $rightPath) -or
                 (Test-PathWithinRoot -Path $rightPath -Root $leftPath)) {
-                throw "Cleanup asset paths overlap: '$leftPath' and '$rightPath'."
+                throw (New-ZpuTypedException `
+                    -Code "cleanup_drift_path" `
+                    -Message "Cleanup asset paths overlap: '$leftPath' and '$rightPath'.")
             }
         }
     }
@@ -232,12 +243,21 @@ function Get-CleanupStateFingerprint {
     foreach ($name in $proofNames) {
         $resultProof[$name] = $null -ne (Get-RequiredPropertyValue -Object $results -Name $name)
     }
-    $state = [pscustomobject][ordered]@{
+    $stateValue = [ordered]@{
         transactionId = Get-RequiredPropertyValue -Object $Plan -Name "transactionId"
         stage = Get-RequiredPropertyValue -Object $Plan -Name "stage"
         resultProof = [pscustomobject]$resultProof
         planFingerprint = Get-RequiredPropertyValue -Object $Plan -Name "planFingerprint"
     }
+    if ([int]$Plan.schemaVersion -ge 2) {
+        $createdAt = Get-RequiredPropertyValue -Object $Plan -Name "createdAt"
+        $stateValue.createdAt = ([DateTimeOffset]$createdAt).
+            ToUniversalTime().
+            ToString("o")
+        $stateValue.activeOperation = Get-OptionalPropertyValue -Object $Plan -Name "activeOperation"
+        $stateValue.tombstone = [bool](Get-OptionalPropertyValue -Object $Plan -Name "tombstone")
+    }
+    $state = [pscustomobject]$stateValue
     $bytes = [Text.Encoding]::UTF8.GetBytes(
         ($state | ConvertTo-Json -Depth 10 -Compress)
     )
@@ -265,7 +285,10 @@ function ConvertTo-CleanupPlan {
     $planValue = [ordered]@{
         schemaVersion = $script:TransactionSchemaVersion
         transactionId = [guid]::NewGuid().ToString()
+        createdAt = (Get-Date).ToUniversalTime().ToString("o")
         stage = "planned"
+        activeOperation = $null
+        tombstone = $false
         scope = [pscustomobject][ordered]@{
             paperRoot = [IO.Path]::GetFullPath([string]$Scope.paperRoot)
             zoteroDataDir = [IO.Path]::GetFullPath([string]$Scope.zoteroDataDir)
@@ -371,6 +394,27 @@ function Set-CleanupStage {
     if ($null -ne $timestampProperty) {
         $Plan.results.$timestampProperty = (Get-Date).ToUniversalTime().ToString("o")
     }
+    if ($null -ne (Get-OptionalPropertyValue -Object $Plan -Name "activeOperation")) {
+        $Plan.activeOperation = $null
+    }
+    $Plan.stateFingerprint = Get-CleanupStateFingerprint -Plan $Plan
+    Write-CleanupPlan -Plan $Plan -TransactionPath $TransactionPath
+}
+
+function Set-CleanupActiveOperation {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "Persists transaction write-ahead intent; destructive authorization belongs to the caller."
+    )]
+    param(
+        [Parameter(Mandatory = $true)][object]$Plan,
+        [Parameter(Mandatory = $true)][string]$Operation,
+        [Parameter(Mandatory = $true)][string]$TransactionPath
+    )
+
+    if ([int]$Plan.schemaVersion -lt 2) { return }
+    $Plan.activeOperation = $Operation
     $Plan.stateFingerprint = Get-CleanupStateFingerprint -Plan $Plan
     Write-CleanupPlan -Plan $Plan -TransactionPath $TransactionPath
 }
@@ -382,8 +426,8 @@ function Read-CleanupPlan {
     )
 
     $plan = Get-Content -LiteralPath $TransactionPath -Raw | ConvertFrom-Json -Depth 30
-    if ([int](Get-RequiredPropertyValue -Object $plan -Name "schemaVersion") -ne
-        $script:TransactionSchemaVersion) {
+    if ([int](Get-RequiredPropertyValue -Object $plan -Name "schemaVersion") -notin
+        @(1, $script:TransactionSchemaVersion)) {
         throw "Unsupported cleanup transaction schema version."
     }
     $stage = [string](Get-RequiredPropertyValue -Object $plan -Name "stage")
@@ -438,7 +482,62 @@ function Assert-PreflightStillMatch {
     $liveJson = $liveState | ConvertTo-Json -Depth 30 -Compress
     $expectedJson = $expected | ConvertTo-Json -Depth 30 -Compress
     if ($liveJson -cne $expectedJson) {
-        throw "Cleanup preflight evidence drifted before the first destructive operation."
+        $versionDrift = $null -eq $liveState
+        $userStateDrift = $false
+        foreach ($sideName in @("retain", "remove")) {
+            if ($null -eq $liveState) { break }
+            $expectedSide = Get-RequiredPropertyValue -Object $expected -Name $sideName
+            $liveSide = Get-OptionalPropertyValue -Object $liveState -Name $sideName
+            if ($null -eq $liveSide) {
+                $versionDrift = $true
+                continue
+            }
+            foreach ($objectName in @("parent", "attachment")) {
+                if ([string]$expectedSide.$objectName.version -cne
+                    [string]$liveSide.$objectName.version) {
+                    $versionDrift = $true
+                }
+            }
+            foreach ($field in @(
+                "tags", "collections", "relations", "childKeys", "notes",
+                "unknownChildren", "inboundRelations"
+            )) {
+                if ((Get-OptionalPropertyValue `
+                        -Object $expectedSide.parent `
+                        -Name $field |
+                        ConvertTo-Json -Depth 20 -Compress) -cne
+                    (Get-OptionalPropertyValue `
+                        -Object $liveSide.parent `
+                        -Name $field |
+                        ConvertTo-Json -Depth 20 -Compress)) {
+                    $userStateDrift = $true
+                }
+            }
+            foreach ($field in @("tags", "relations", "hasAnnotations")) {
+                if ((Get-OptionalPropertyValue `
+                        -Object $expectedSide.attachment `
+                        -Name $field |
+                        ConvertTo-Json -Depth 20 -Compress) -cne
+                    (Get-OptionalPropertyValue `
+                        -Object $liveSide.attachment `
+                        -Name $field |
+                        ConvertTo-Json -Depth 20 -Compress)) {
+                    $userStateDrift = $true
+                }
+            }
+        }
+        $code = if ($versionDrift) {
+            "cleanup_drift_version"
+        }
+        elseif ($userStateDrift) {
+            "cleanup_drift_user_state"
+        }
+        else {
+            "cleanup_drift_identity"
+        }
+        throw (New-ZpuTypedException `
+            -Code $code `
+            -Message "Cleanup preflight evidence drifted; a new preflight is required.")
     }
     $validationValue = [ordered]@{}
     foreach ($property in $expected.PSObject.Properties) {
@@ -540,12 +639,21 @@ function Assert-CleanupSafety {
         -Candidate ([pscustomobject]$candidateValue) `
         -Scope $Plan.scope
     $expected = @(Get-ExpectedAssetEvidence -Plan $Plan)
-    $actual = @(
-        Invoke-CleanupOperation `
-            -Operations $Operations `
-            -Name "ReadAssetEvidence" `
-            -Arguments @($Plan, @($expected))
-    )
+    try {
+        $actual = @(
+            Invoke-CleanupOperation `
+                -Operations $Operations `
+                -Name "ReadAssetEvidence" `
+                -Arguments @($Plan, @($expected))
+        )
+    }
+    catch {
+        $typedCode = [string]$_.Exception.Data["ZpuIssueCode"]
+        if (-not [string]::IsNullOrWhiteSpace($typedCode)) { throw }
+        throw (New-ZpuTypedException `
+            -Code "cleanup_drift_asset" `
+            -Message "Cleanup asset path, hash, or provenance evidence could not be read: $($_.Exception.Message)")
+    }
     $expectedJson = $expected | ConvertTo-Json -Depth 30 -Compress
     $actualJson = $actual | ConvertTo-Json -Depth 30 -Compress
     if ($actualJson -ceq $expectedJson) {
@@ -566,7 +674,9 @@ function Assert-CleanupSafety {
             return $false
         }
     }
-    throw "Cleanup asset hash, provenance, path, or retained-set evidence drifted."
+    throw (New-ZpuTypedException `
+        -Code "cleanup_drift_hash" `
+        -Message "Cleanup asset hash, provenance, or retained-set evidence drifted.")
 }
 
 function Test-CleanupStringSubset {
@@ -603,12 +713,21 @@ function Invoke-PreflightedCleanupStage {
 
     $consolidationDecision = Get-OptionalPropertyValue -Object $Plan -Name "consolidationDecision"
     if ($null -eq $consolidationDecision) {
+        Assert-PreflightStillMatch -Plan $Plan -Operations $Operations
         Invoke-ConsolidatedCleanupStage `
             -Plan $Plan `
             -TransactionPath $TransactionPath `
             -Operations $Operations
         return
     }
+    if ([string](Get-OptionalPropertyValue -Object $Plan -Name "activeOperation") -cne
+        "consolidate") {
+        Assert-PreflightStillMatch -Plan $Plan -Operations $Operations
+    }
+    Set-CleanupActiveOperation `
+        -Plan $Plan `
+        -Operation "consolidate" `
+        -TransactionPath $TransactionPath
     $result = Invoke-CleanupOperation `
         -Operations $Operations `
         -Name "ApplyConsolidation" `
@@ -641,9 +760,22 @@ function Invoke-ConsolidatedCleanupStage {
         -not (Test-ExactStringSet `
             -Actual (@($trashKeys) + @($liveKeys)) `
             -Expected $Plan.deleteKeys)) {
-        throw "Live Zotero items and Trash are not the exact partition of the expected delete set."
+        throw (New-ZpuTypedException `
+            -Code "cleanup_drift_trash" `
+            -Message "Live Zotero items and Trash are not the exact expected delete partition.")
+    }
+    if ($trashKeys.Count -gt 0 -and [int]$Plan.schemaVersion -ge 2 -and
+        [string](Get-OptionalPropertyValue -Object $Plan -Name "activeOperation") -cne
+            "trash_zotero") {
+        throw (New-ZpuTypedException `
+            -Code "cleanup_drift_trash" `
+            -Message "Trash progress exists without a persisted trash operation intent.")
     }
     if ($liveKeys.Count -gt 0) {
+        Set-CleanupActiveOperation `
+            -Plan $Plan `
+            -Operation "trash_zotero" `
+            -TransactionPath $TransactionPath
         Invoke-CleanupOperation `
             -Operations $Operations `
             -Name "TrashZotero" `
@@ -666,7 +798,14 @@ function Invoke-TrashedCleanupStage {
     $null = Assert-CleanupSafety -Plan $Plan -Operations $Operations
     $trashKeys = @(Invoke-CleanupOperation -Operations $Operations -Name "GetTrashKeys")
     if (-not (Test-ExactStringSet -Actual $trashKeys -Expected $Plan.deleteKeys)) {
-        throw "Zotero Trash is not the exact expected delete set."
+        throw (New-ZpuTypedException `
+            -Code "cleanup_drift_trash" `
+            -Message "Zotero Trash is not the exact expected delete set.")
+    }
+    $trashEvidenceOperation = $Operations.PSObject.Properties["AssertTrashedZoteroEvidence"]
+    if ($null -ne $trashEvidenceOperation -and
+        $trashEvidenceOperation.Value -is [scriptblock]) {
+        & $trashEvidenceOperation.Value $Plan
     }
     Set-CleanupStage -Plan $Plan -Stage "trash_verified" -TransactionPath $TransactionPath
 }
@@ -679,6 +818,11 @@ function Invoke-TrashVerifiedCleanupStage {
     )
 
     $null = Assert-CleanupSafety -Plan $Plan -Operations $Operations
+    $trashEvidenceOperation = $Operations.PSObject.Properties["AssertTrashedZoteroEvidence"]
+    if ($null -ne $trashEvidenceOperation -and
+        $trashEvidenceOperation.Value -is [scriptblock]) {
+        & $trashEvidenceOperation.Value $Plan
+    }
     $existingKeys = @(
         Invoke-CleanupOperation `
             -Operations $Operations `
@@ -693,6 +837,10 @@ function Invoke-TrashVerifiedCleanupStage {
         if (-not (Test-ExactStringSet -Actual $trashKeys -Expected $Plan.deleteKeys)) {
             throw "Zotero Trash changed before permanent purge."
         }
+        Set-CleanupActiveOperation `
+            -Plan $Plan `
+            -Operation "purge_zotero" `
+            -TransactionPath $TransactionPath
         Invoke-CleanupOperation `
             -Operations $Operations `
             -Name "PurgeZotero" `
@@ -702,6 +850,13 @@ function Invoke-TrashVerifiedCleanupStage {
         $trashKeys = @(Invoke-CleanupOperation -Operations $Operations -Name "GetTrashKeys")
         if ($trashKeys.Count -gt 0) {
             throw "Unexpected Zotero Trash content exists after the expected purge."
+        }
+        if ([int]$Plan.schemaVersion -ge 2 -and
+            [string](Get-OptionalPropertyValue -Object $Plan -Name "activeOperation") -cne
+                "purge_zotero") {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_drift_zotero_state" `
+                -Message "Purged Zotero state exists without a persisted purge operation intent.")
         }
     }
     $remainingKeys = @(
@@ -734,6 +889,13 @@ function Invoke-CleanupAssetRemovalStage {
     $removals = if ($null -ne $removalsProperty) { @($removalsProperty) } else { @($Plan.remove) }
     $paths = @($removals | ForEach-Object { [string]$_.$Kind.path })
     if (-not $assetExists) {
+        if ([int]$Plan.schemaVersion -ge 2 -and
+            [string](Get-OptionalPropertyValue -Object $Plan -Name "activeOperation") -cne
+                "remove_$Kind") {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_drift_asset" `
+                -Message "Missing $Kind assets have no persisted removal operation intent.")
+        }
         Set-CleanupStage -Plan $Plan -Stage $NextStage -TransactionPath $TransactionPath
         return
     }
@@ -747,6 +909,10 @@ function Invoke-CleanupAssetRemovalStage {
         if (-not (Test-ExactStringSet -Actual $existingPaths -Expected $paths)) {
             throw "The $Kind delete set drifted."
         }
+        Set-CleanupActiveOperation `
+            -Plan $Plan `
+            -Operation "remove_$Kind" `
+            -TransactionPath $TransactionPath
         Invoke-CleanupOperation `
             -Operations $Operations `
             -Name $Operation `
@@ -762,6 +928,91 @@ function Invoke-CleanupAssetRemovalStage {
         throw "The $Kind delete operation did not remove the expected paths."
     }
     Set-CleanupStage -Plan $Plan -Stage $NextStage -TransactionPath $TransactionPath
+}
+
+function Assert-CompletedCleanupProof {
+    param(
+        [Parameter(Mandatory = $true)][object]$Plan,
+        [Parameter(Mandatory = $true)][object]$Operations
+    )
+
+    $existingKeys = @(
+        Invoke-CleanupOperation `
+            -Operations $Operations `
+            -Name "GetExistingZoteroKeys" `
+            -Arguments @(,@($Plan.deleteKeys))
+    )
+    $trashKeys = @(
+        Invoke-CleanupOperation -Operations $Operations -Name "GetTrashKeys"
+    )
+    if ($existingKeys.Count -gt 0 -or
+        @($trashKeys | Where-Object { $_ -cin @($Plan.deleteKeys) }).Count -gt 0) {
+        throw (New-ZpuTypedException `
+            -Code "cleanup_completed_orphan_zotero" `
+            -Message "Completed cleanup has orphaned live or Trash Zotero objects.")
+    }
+
+    $removalsProperty = Get-OptionalPropertyValue -Object $Plan -Name "removals"
+    $removals = if ($null -ne $removalsProperty) { @($removalsProperty) } else { @($Plan.remove) }
+    foreach ($kind in @("storage", "cache", "local")) {
+        $paths = @($removals | ForEach-Object { [string]$_.$kind.path })
+        $existingPaths = @(
+            Invoke-CleanupOperation `
+                -Operations $Operations `
+                -Name "GetExistingPaths" `
+                -Arguments @($kind, @($paths))
+        )
+        if ($existingPaths.Count -gt 0) {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_completed_orphan_$kind" `
+                -Message "Completed cleanup has orphaned $kind assets.")
+        }
+    }
+
+    $orphanOperation = $Operations.PSObject.Properties["AssertNoOrphans"]
+    if ($null -ne $orphanOperation -and $orphanOperation.Value -is [scriptblock]) {
+        try {
+            & $orphanOperation.Value $Plan
+        }
+        catch {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_completed_orphan_graph" `
+                -Message "Completed cleanup has orphaned child, relation, or provenance state: $($_.Exception.Message)")
+        }
+    }
+
+    if ($null -ne $orphanOperation -and $orphanOperation.Value -is [scriptblock]) {
+        return
+    }
+    try {
+        $expectedRetained = @(
+            foreach ($kind in @("storage", "cache", "local")) {
+                [pscustomobject][ordered]@{
+                    side = "retain"
+                    kind = $kind
+                    value = $Plan.retain.$kind
+                }
+            }
+        )
+        $actualRetained = @(
+            Invoke-CleanupOperation `
+                -Operations $Operations `
+                -Name "ReadAssetEvidence" `
+                -Arguments @($Plan, @($expectedRetained))
+        )
+        if (($actualRetained | ConvertTo-Json -Depth 30 -Compress) -cne
+            ($expectedRetained | ConvertTo-Json -Depth 30 -Compress)) {
+            throw "Retained asset proof changed."
+        }
+    }
+    catch {
+        if ([string]$_.Exception.Data["ZpuIssueCode"] -clike "cleanup_completed_orphan_*") {
+            throw
+        }
+        throw (New-ZpuTypedException `
+            -Code "cleanup_completed_retained_drift" `
+            -Message "Completed cleanup retained graph, cache, hash, path, or name proof drifted.")
+    }
 }
 
 function Invoke-ResumableCleanupTransaction {
@@ -780,6 +1031,13 @@ function Invoke-ResumableCleanupTransaction {
     }
     $wasCompleted = [string]$plan.stage -eq "completed"
     if ($wasCompleted) {
+        Assert-CompletedCleanupProof -Plan $plan -Operations $Operations
+        if ([int]$plan.schemaVersion -ge 2 -and
+            -not [bool](Get-OptionalPropertyValue -Object $plan -Name "tombstone")) {
+            $plan.tombstone = $true
+            $plan.stateFingerprint = Get-CleanupStateFingerprint -Plan $plan
+            Write-CleanupPlan -Plan $plan -TransactionPath $TransactionPath
+        }
         return [pscustomobject][ordered]@{
             completed = $true
             changed = $false
@@ -822,7 +1080,17 @@ function Invoke-ResumableCleanupTransaction {
             }
             "cache_removed" {
                 $null = Assert-CleanupSafety -Plan $plan -Operations $Operations
-                Set-CleanupStage -Plan $plan -Stage "completed" -TransactionPath $TransactionPath
+                $plan.stage = "completed"
+                $plan.results.completedAt = (Get-Date).ToUniversalTime().ToString("o")
+                if ($null -ne $plan.PSObject.Properties["activeOperation"]) {
+                    $plan.activeOperation = $null
+                }
+                if ($null -ne $plan.PSObject.Properties["tombstone"]) {
+                    $plan.tombstone = $true
+                }
+                $plan.stateFingerprint = Get-CleanupStateFingerprint -Plan $plan
+                Write-CleanupPlan -Plan $plan -TransactionPath $TransactionPath
+                Assert-CompletedCleanupProof -Plan $plan -Operations $Operations
             }
             default { throw "Unsupported cleanup transaction stage '$($plan.stage)'." }
         }
@@ -994,4 +1262,7 @@ function Invoke-MinimalDuplicateCleanup {
 Export-ModuleMember -Function `
     Invoke-MinimalDuplicateCleanup, `
     Invoke-ResumableCleanupTransaction, `
-    Invoke-CleanupCandidateTransaction
+    Invoke-CleanupCandidateTransaction, `
+    ConvertTo-CleanupPlan, `
+    Read-CleanupPlan, `
+    Get-CleanupStateFingerprint

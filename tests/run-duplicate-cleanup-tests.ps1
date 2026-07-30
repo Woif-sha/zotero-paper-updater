@@ -300,7 +300,8 @@ try {
         "zotero-paper-updater-transactions\cleanup-v1-PARENT11-PARENT22.json"
     $persistedText = [IO.File]::ReadAllText($transactionPath)
     $persisted = $persistedText | ConvertFrom-Json
-    Assert-True -Condition ($persisted.schemaVersion -eq 1) -Message "cleanup plans should use schema v1"
+    Assert-True -Condition ($persisted.schemaVersion -eq 2) -Message "new cleanup plans should use schema v2"
+    Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$persisted.createdAt)) -Message "v2 plans should persist immutable queue creation time"
     Assert-True -Condition ($persisted.stage -eq "completed") -Message "a completed transaction should persist its proof stage"
     Assert-True -Condition (-not $persistedText.Contains("backup")) -Message "the plan must not create or describe backup copies"
     Assert-True -Condition (@(Get-ChildItem -LiteralPath (Split-Path -Parent $transactionPath) -Filter "*.tmp").Count -eq 0) -Message "atomic persistence should not leave temporary files"
@@ -363,6 +364,7 @@ try {
         -Targets @([pscustomobject]@{ parentItemKey = "PARENT11" }) `
         -Operations $extraTrash.operations
     Assert-True -Condition ($trashBlocked.status -eq "failed") -Message "unrelated Trash content should block cleanup"
+    Assert-True -Condition ($trashBlocked.issues[0].code -eq "cleanup_drift_trash") -Message "extra Trash should be typed"
     Assert-True -Condition ($extraTrash.state.calls.Count -eq 0) -Message "Trash must be exact before any deletion"
 
     foreach ($interruption in @("trash", "purge", "storage", "cache", "local")) {
@@ -399,6 +401,76 @@ try {
         -Operations $plannedInterruption.operations
     Assert-True -Condition ($resumedPlannedRun.status -eq "succeeded") -Message "a persisted planned stage should resume through fresh preflight"
 
+    $driftCases = @(
+        [pscustomobject]@{
+            name = "version"
+            code = "cleanup_drift_version"
+            mutate = { param($State) $State.liveState.remove.parent.version++ }
+        },
+        [pscustomobject]@{
+            name = "tags"
+            code = "cleanup_drift_user_state"
+            mutate = { param($State) $State.liveState.remove.parent.tags = @("new-tag") }
+        },
+        [pscustomobject]@{
+            name = "collections"
+            code = "cleanup_drift_user_state"
+            mutate = { param($State) $State.liveState.remove.parent.collections = @(99) }
+        },
+        [pscustomobject]@{
+            name = "relations"
+            code = "cleanup_drift_user_state"
+            mutate = {
+                param($State)
+                $State.liveState.remove.parent.relations = [pscustomobject]@{
+                    "dc:relation" = @("new-relation")
+                }
+            }
+        },
+        [pscustomobject]@{
+            name = "note"
+            code = "cleanup_drift_user_state"
+            mutate = {
+                param($State)
+                $State.liveState.remove.parent.childKeys = @("ATTACH22", "NEWNOTE1")
+                $State.liveState.remove.parent | Add-Member `
+                    -NotePropertyName notes `
+                    -NotePropertyValue @("NEWNOTE1")
+            }
+        },
+        [pscustomobject]@{
+            name = "annotation"
+            code = "cleanup_drift_user_state"
+            mutate = {
+                param($State)
+                $State.liveState.remove.attachment | Add-Member `
+                    -NotePropertyName hasAnnotations `
+                    -NotePropertyValue $true
+            }
+        }
+    )
+    foreach ($driftCase in $driftCases) {
+        $drift = New-CleanupFixture `
+            -Name "drift-$($driftCase.name)" `
+            -FailAfter "read"
+        $null = Invoke-MinimalDuplicateCleanup `
+            -Scope $drift.scope `
+            -Targets @([pscustomobject]@{ parentItemKey = "PARENT11" }) `
+            -Operations $drift.operations
+        & $driftCase.mutate $drift.state
+        $callsBeforeDrift = $drift.state.calls.Count
+        $driftResult = Invoke-MinimalDuplicateCleanup `
+            -Scope $drift.scope `
+            -Targets @([pscustomobject]@{ parentItemKey = "PARENT11" }) `
+            -Operations $drift.operations
+        Assert-True `
+            ($driftResult.issues[0].code -eq $driftCase.code) `
+            "$($driftCase.name) drift should return $($driftCase.code): $($driftResult.issues | ConvertTo-Json -Compress)"
+        Assert-True `
+            ($drift.state.calls.Count -eq $callsBeforeDrift) `
+            "$($driftCase.name) drift should make zero mutations"
+    }
+
     $partialTrash = New-CleanupFixture -Name "resume-partial-trash" -FailAfter "trash-first"
     $partialTrashFirst = Invoke-MinimalDuplicateCleanup `
         -Scope $partialTrash.scope `
@@ -409,7 +481,7 @@ try {
         -Scope $partialTrash.scope `
         -Targets @([pscustomobject]@{ parentItemKey = "PARENT11" }) `
         -Operations $partialTrash.operations
-    Assert-True -Condition ($partialTrashResume.status -eq "succeeded") -Message "a verified expected Trash subset should resume"
+    Assert-True -Condition ($partialTrashResume.status -eq "succeeded") -Message "a verified expected Trash subset should resume: $($partialTrashResume.issues | ConvertTo-Json -Compress)"
     Assert-True -Condition (@($partialTrash.state.calls | Where-Object { $_ -eq "trash" }).Count -eq 2) -Message "resume should trash only the remaining expected key"
 
     $tampered = New-CleanupFixture -Name "tampered-transaction" -FailAfter "trash-first"
@@ -469,7 +541,30 @@ try {
         -Targets @([pscustomobject]@{ parentItemKey = "PARENT11" }) `
         -Operations $hashDrift.operations
     Assert-True -Condition ($hashDriftResult.status -eq "failed") -Message "asset hash drift should block recovery"
+    Assert-True -Condition ($hashDriftResult.issues[0].code -eq "cleanup_drift_hash") -Message "hash drift should be typed"
     Assert-True -Condition ($hashDrift.state.calls.Count -eq $callsBeforeHashResume) -Message "hash drift must block before another mutation"
+
+    $provenanceDrift = New-CleanupFixture -Name "provenance-drift" -FailAfter "read"
+    $null = Invoke-MinimalDuplicateCleanup `
+        -Scope $provenanceDrift.scope `
+        -Targets @([pscustomobject]@{ parentItemKey = "PARENT11" }) `
+        -Operations $provenanceDrift.operations
+    $provenanceDrift.operations.ReadAssetEvidence = {
+        $exception = [InvalidOperationException]::new("cache provenance changed")
+        $exception.Data["ZpuIssueCode"] = "cleanup_drift_provenance"
+        throw $exception
+    }
+    $callsBeforeProvenance = $provenanceDrift.state.calls.Count
+    $provenanceResult = Invoke-MinimalDuplicateCleanup `
+        -Scope $provenanceDrift.scope `
+        -Targets @([pscustomobject]@{ parentItemKey = "PARENT11" }) `
+        -Operations $provenanceDrift.operations
+    Assert-True `
+        ($provenanceResult.issues[0].code -eq "cleanup_drift_provenance") `
+        "provenance drift should retain its typed code"
+    Assert-True `
+        ($provenanceDrift.state.calls.Count -eq $callsBeforeProvenance) `
+        "provenance drift should make zero mutations"
 
     $reparse = New-CleanupFixture -Name "reparse-path"
     Remove-Item -LiteralPath $reparse.candidate.remove.local.path -Force
@@ -486,6 +581,7 @@ try {
         -Targets @([pscustomobject]@{ parentItemKey = "PARENT11" }) `
         -Operations $reparse.operations
     Assert-True -Condition ($reparseResult.status -eq "failed") -Message "a reparse-point asset path should block cleanup"
+    Assert-True -Condition ($reparseResult.issues[0].code -eq "cleanup_drift_path") -Message "reparse drift should be typed"
     Assert-True -Condition ($reparse.state.calls.Count -eq 0) -Message "reparse-point paths must block before mutation"
 
     Write-Output "All $passed duplicate-cleanup assertions passed."

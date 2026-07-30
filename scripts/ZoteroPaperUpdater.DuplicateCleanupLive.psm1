@@ -131,27 +131,48 @@ function Get-LiveCleanupAssetEvidence {
         $value = [Management.Automation.PSSerializer]::Deserialize(
             [Management.Automation.PSSerializer]::Serialize($descriptor.value, 20)
         )
-        $path = [IO.Path]::GetFullPath([string]$value.path)
-        Assert-PathChainHasNoReparsePoint -Path $path
+        try {
+            $path = [IO.Path]::GetFullPath([string]$value.path)
+            Assert-PathChainHasNoReparsePoint -Path $path
+        }
+        catch {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_drift_path" `
+                -Message $_.Exception.Message)
+        }
         if (-not (Test-Path -LiteralPath $path)) {
             continue
         }
         if ($kind -eq "storage") {
             if (-not (Test-Path -LiteralPath $path -PathType Container)) {
-                throw "Cleanup storage path is not a directory: $path"
+                throw (New-ZpuTypedException `
+                    -Code "cleanup_drift_path" `
+                    -Message "Cleanup storage path is not a directory: $path")
             }
             $pdfPath = [string](Get-OptionalPropertyValue -Object $value -Name "pdfPath")
-            if ([string]::IsNullOrWhiteSpace($pdfPath) -or
-                -not (Test-PathWithinRoot -Path $pdfPath -Root $path) -or
-                -not (Test-Path -LiteralPath $pdfPath -PathType Leaf)) {
-                throw "Cleanup storage PDF is missing or outside its fixed storage directory."
+            try {
+                if ([string]::IsNullOrWhiteSpace($pdfPath)) {
+                    throw "Cleanup storage PDF path is empty."
+                }
+                $pdfPath = [IO.Path]::GetFullPath($pdfPath)
+                Assert-PathChainHasNoReparsePoint -Path $pdfPath
+                if (-not (Test-PathWithinRoot -Path $pdfPath -Root $path) -or
+                    -not (Test-Path -LiteralPath $pdfPath -PathType Leaf)) {
+                    throw "Cleanup storage PDF is missing or outside its fixed storage directory."
+                }
             }
-            Assert-PathChainHasNoReparsePoint -Path $pdfPath
+            catch {
+                throw (New-ZpuTypedException `
+                    -Code "cleanup_drift_path" `
+                    -Message $_.Exception.Message)
+            }
             $value.sha256 = Get-LiveCleanupSha256 -Path $pdfPath
         }
         elseif ($kind -eq "local") {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-                throw "Cleanup local PDF path is not a file: $path"
+                throw (New-ZpuTypedException `
+                    -Code "cleanup_drift_path" `
+                    -Message "Cleanup local PDF path is not a file: $path")
             }
             $value.sha256 = Get-LiveCleanupSha256 -Path $path
         }
@@ -166,7 +187,9 @@ function Get-LiveCleanupAssetEvidence {
                     $path,
                     [StringComparison]::OrdinalIgnoreCase
                 )) {
-                throw "Cleanup MinerU provenance no longer resolves to the fixed cache path."
+                throw (New-ZpuTypedException `
+                    -Code "cleanup_drift_provenance" `
+                    -Message "Cleanup MinerU provenance no longer resolves to the fixed cache path.")
             }
             $value.fullMdSha256 = $cache.fullMdSha256
             $value.healthy = $cache.healthy
@@ -461,6 +484,162 @@ function ConvertTo-LiveCleanupBase64 {
     )
 }
 
+function Assert-LiveCleanupClosure {
+    param(
+        [Parameter(Mandatory = $true)][object]$Plan,
+        [Parameter(Mandatory = $true)][object]$Scope,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Items,
+        [Parameter(Mandatory = $true)][string]$CacheRoot
+    )
+
+    $retainParentKey = [string]$Plan.retain.parent.key
+    $retainAttachmentKey = [string]$Plan.retain.attachment.key
+    $retainParent = @($Items | Where-Object { [string]$_.key -ceq $retainParentKey })
+    $retainAttachment = @($Items | Where-Object { [string]$_.key -ceq $retainAttachmentKey })
+    if ($retainParent.Count -ne 1 -or $retainAttachment.Count -ne 1) {
+        throw "retained Zotero parent or attachment is missing or ambiguous"
+    }
+    $attachmentData = Get-LiveCleanupItemData -Item $retainAttachment[0]
+    if ([string](Get-OptionalPropertyValue -Object $attachmentData -Name "parentItem") -cne
+        $retainParentKey) {
+        throw "retained attachment is no longer attached to the retained parent"
+    }
+    $retainSide = ConvertTo-LiveCleanupSide `
+        -Scope $Scope `
+        -Parent $retainParent[0] `
+        -Attachment $retainAttachment[0] `
+        -Items $Items
+    if ($null -eq $retainSide -or -not [bool]$retainSide.cache.healthy) {
+        throw "retained storage, local PDF, or healthy MinerU cache is missing"
+    }
+    if ([string]$retainSide.storage.sha256 -cne [string]$Plan.retain.storage.sha256 -or
+        [string]$retainSide.local.sha256 -cne [string]$Plan.retain.local.sha256 -or
+        [string]$retainSide.cache.fullMdSha256 -cne
+            [string]$Plan.retain.cache.fullMdSha256) {
+        throw "retained storage, local PDF, or MinerU Markdown hash drifted"
+    }
+    $localName = [IO.Path]::GetFileName([string]$retainSide.local.path)
+    if ([string]::IsNullOrWhiteSpace($localName) -or
+        [IO.Path]::GetExtension($localName) -ine ".pdf") {
+        throw "retained local PDF no longer has a valid current basename"
+    }
+
+    $losingKeys = @(
+        @($Plan.deleteKeys) +
+        @(
+            $removals = if ($null -ne (
+                Get-OptionalPropertyValue -Object $Plan -Name "removals"
+            )) {
+                @($Plan.removals)
+            }
+            else {
+                @($Plan.remove)
+            }
+            foreach ($member in $removals) {
+                @($member.parent.childKeys)
+                @($member.parent.notes)
+                @($member.parent.unknownChildren)
+            }
+        ) |
+            ForEach-Object { [string]$_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique
+    )
+    foreach ($item in $Items) {
+        if ([string]$item.key -cin $losingKeys) {
+            throw "losing Zotero key '$($item.key)' still exists"
+        }
+        $data = Get-LiveCleanupItemData -Item $item
+        $relations = Get-OptionalPropertyValue -Object $data -Name "relations"
+        if ($null -eq $relations) { continue }
+        foreach ($property in $relations.PSObject.Properties) {
+            foreach ($value in @($property.Value)) {
+                foreach ($key in $losingKeys) {
+                    if ([string]$value -match "/items/$([regex]::Escape($key))$") {
+                        throw "relation on '$($item.key)' still points to losing key '$key'"
+                    }
+                }
+            }
+        }
+    }
+    if (Test-Path -LiteralPath $CacheRoot -PathType Container) {
+        foreach ($sourceFile in Get-ChildItem `
+            -LiteralPath $CacheRoot `
+            -Filter "_llm_source.json" `
+            -File `
+            -Recurse) {
+            $source = Get-Content -LiteralPath $sourceFile.FullName -Raw |
+                ConvertFrom-Json -Depth 20
+            if ([string]$source.attachmentKey -cin $losingKeys -or
+                [string]$source.parentItemKey -cin $losingKeys) {
+                throw "MinerU provenance '$($sourceFile.FullName)' still points to a losing key"
+            }
+        }
+    }
+}
+
+function Assert-LiveTrashedCleanupEvidence {
+    param(
+        [Parameter(Mandatory = $true)][object]$Plan,
+        [Parameter(Mandatory = $true)][object]$Scope,
+        [Parameter(Mandatory = $true)][object[]]$Items
+    )
+
+    $byKey = @{}
+    foreach ($item in $Items) { $byKey[[string]$item.key] = $item }
+    $removals = if ($null -ne (Get-OptionalPropertyValue -Object $Plan -Name "removals")) {
+        @($Plan.removals)
+    }
+    else {
+        @($Plan.remove)
+    }
+    foreach ($expected in $removals) {
+        $parentKey = [string]$expected.parent.key
+        $attachmentKey = [string]$expected.attachment.key
+        if (-not $byKey.ContainsKey($parentKey) -or
+            -not $byKey.ContainsKey($attachmentKey)) {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_drift_trash" `
+                -Message "Expected trashed parent or attachment disappeared before purge.")
+        }
+        $actual = ConvertTo-LiveCleanupSide `
+            -Scope $Scope `
+            -Parent $byKey[$parentKey] `
+            -Attachment $byKey[$attachmentKey] `
+            -Items $Items
+        if ($null -eq $actual) {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_drift_zotero_state" `
+                -Message "Trashed Zotero object assets or child evidence no longer resolves.")
+        }
+        $expectedParent = [Management.Automation.PSSerializer]::Deserialize(
+            [Management.Automation.PSSerializer]::Serialize($expected.parent, 20)
+        )
+        $expectedAttachment = [Management.Automation.PSSerializer]::Deserialize(
+            [Management.Automation.PSSerializer]::Serialize($expected.attachment, 20)
+        )
+        $actualParentVersion = [int]$actual.parent.version
+        $expectedParentVersion = [int]$expectedParent.version
+        $parentVersionMatches = $actualParentVersion -eq $expectedParentVersion -or
+            $actualParentVersion -eq ($expectedParentVersion + 1)
+        $actualAttachmentVersion = [int]$actual.attachment.version
+        $expectedAttachmentVersion = [int]$expectedAttachment.version
+        $attachmentVersionMatches = $actualAttachmentVersion -eq $expectedAttachmentVersion -or
+            $actualAttachmentVersion -eq ($expectedAttachmentVersion + 1)
+        $actual.parent.version = $null
+        $actual.attachment.version = $null
+        $expectedParent.version = $null
+        $expectedAttachment.version = $null
+        if (-not $parentVersionMatches -or -not $attachmentVersionMatches -or
+            -not (Test-DeepValueEqual -Left $actual.parent -Right $expectedParent) -or
+            -not (Test-DeepValueEqual -Left $actual.attachment -Right $expectedAttachment)) {
+            throw (New-ZpuTypedException `
+                -Code "cleanup_drift_zotero_state" `
+                -Message "Trashed Zotero identity, version, relation, note, or annotation evidence drifted.")
+        }
+    }
+}
+
 function Get-LiveDuplicateCleanupOperationTable {
     param(
         [Parameter(Mandatory = $true)][object]$Scope,
@@ -634,6 +813,24 @@ env.log(JSON.stringify({status:"purged", keys:expected}));
             }
         }
     }.GetNewClosure()
+    $assertNoOrphans = {
+        param($Plan)
+        $allItems = @(& $ReadAllItems $Scope) + @(& $ReadTrashItems)
+        $cacheRoot = Join-Path $Scope.zoteroDataDir "llm-for-zotero-mineru"
+        ZoteroPaperUpdater.DuplicateCleanupLive\Assert-LiveCleanupClosure `
+            -Plan $Plan `
+            -Scope $Scope `
+            -Items $allItems `
+            -CacheRoot $cacheRoot
+    }.GetNewClosure()
+    $assertTrashedEvidence = {
+        param($Plan)
+        $items = @(& $ReadAllItems $Scope) + @(& $ReadTrashItems)
+        ZoteroPaperUpdater.DuplicateCleanupLive\Assert-LiveTrashedCleanupEvidence `
+            -Plan $Plan `
+            -Scope $Scope `
+            -Items $items
+    }.GetNewClosure()
     [pscustomobject]@{
         FindCandidates = $findCandidates
         ReadLiveState = $readLiveState
@@ -649,6 +846,8 @@ env.log(JSON.stringify({status:"purged", keys:expected}));
         RemoveStorage = $removePaths
         RemoveCache = $removePaths
         RemoveLocal = $removePaths
+        AssertNoOrphans = $assertNoOrphans
+        AssertTrashedZoteroEvidence = $assertTrashedEvidence
     }
 }
 
@@ -660,4 +859,6 @@ Export-ModuleMember -Function `
     Test-LiveFormalFinalAttachment, `
     Get-LiveCleanupAssetEvidence, `
     ConvertTo-LiveCleanupBase64, `
-    Invoke-LiveCleanupScript
+    Invoke-LiveCleanupScript, `
+    Assert-LiveCleanupClosure, `
+    Assert-LiveTrashedCleanupEvidence
