@@ -5,10 +5,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$entryPath = Join-Path $repoRoot "scripts\maintain-library.ps1"
 $adapterPath = Join-Path $PSScriptRoot "fixtures\FakeMetadataEnrichmentAdapter.psm1"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
     ("zotero-metadata-enrichment-test-" + [guid]::NewGuid().ToString("N"))
+$harnessModulePath = Join-Path $PSScriptRoot "TestMaintenanceHarness.psm1"
+Import-Module -Name $harnessModulePath -Force
+$entryPath = New-MaintenanceTestHarness `
+    -RepoRoot $repoRoot `
+    -TempRoot $tempRoot `
+    -AdapterPath $adapterPath
 $paperRoot = Join-Path $tempRoot "papers"
 $zoteroDataDir = Join-Path $tempRoot "ZoteroData"
 $passed = 0
@@ -51,8 +56,7 @@ function Invoke-MetadataEntry {
             "-NoProfile",
             "-File", $entryPath,
             "-PaperRoot", $paperRoot,
-            "-ZoteroDataDir", $zoteroDataDir,
-            "-AdapterModulePath", $adapterPath
+            "-ZoteroDataDir", $zoteroDataDir
         )) {
             $startInfo.ArgumentList.Add($argument)
         }
@@ -188,5 +192,3 @@ finally {
         Remove-Item -LiteralPath $resolvedTempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-
-& (Join-Path $PSScriptRoot "run-live-metadata-adapter-tests.ps1")

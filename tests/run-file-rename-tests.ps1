@@ -5,10 +5,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$entryPath = Join-Path $repoRoot "scripts\maintain-library.ps1"
 $adapterPath = Join-Path $PSScriptRoot "fixtures\FakeFileRenameAdapter.psm1"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("zotero-file-rename-test-" + [guid]::NewGuid().ToString("N"))
+$harnessModulePath = Join-Path $PSScriptRoot "TestMaintenanceHarness.psm1"
+Import-Module -Name $harnessModulePath -Force
+$entryPath = New-MaintenanceTestHarness `
+    -RepoRoot $repoRoot `
+    -TempRoot $tempRoot `
+    -AdapterPath $adapterPath
 $passed = 0
+$scenarioRuns = @{}
 
 function Assert-True {
     param(
@@ -25,7 +31,12 @@ function Assert-True {
     $script:passed++
 }
 
-function Invoke-FileRenameScenario {
+function Start-FileRenameScenario {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "Starts an isolated child process that writes only beneath the per-run test directory."
+    )]
     param(
         [Parameter(Mandatory = $true)]
         [string]$Scenario
@@ -34,61 +45,71 @@ function Invoke-FileRenameScenario {
     $scenarioRoot = Join-Path $tempRoot $Scenario
     $paperRoot = Join-Path $scenarioRoot "papers"
     $zoteroDataDir = Join-Path $scenarioRoot "ZoteroData"
-    $previousScenario = $env:ZPU_FILE_RENAME_SCENARIO
-    $process = $null
-    $env:ZPU_FILE_RENAME_SCENARIO = $Scenario
-    try {
-        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-        $startInfo.FileName = (Get-Command pwsh -ErrorAction Stop).Source
-        $startInfo.UseShellExecute = $false
-        $startInfo.CreateNoWindow = $true
-        $startInfo.RedirectStandardOutput = $true
-        $startInfo.RedirectStandardError = $true
-        foreach ($argument in @(
-            "-NoProfile",
-            "-File",
-            $entryPath,
-            "-PaperRoot",
-            $paperRoot,
-            "-ZoteroDataDir",
-            $zoteroDataDir,
-            "-AdapterModulePath",
-            $adapterPath
-        )) {
-            $startInfo.ArgumentList.Add($argument)
-        }
-
-        $process = [System.Diagnostics.Process]::new()
-        $process.StartInfo = $startInfo
-        if (-not $process.Start()) {
-            throw "Failed to start file rename test process."
-        }
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(60000)) {
-            $process.Kill($true)
-            $process.WaitForExit()
-            throw "File rename test process exceeded the 60-second timeout."
-        }
-        $exitCode = $process.ExitCode
-        $stdout = $stdoutTask.GetAwaiter().GetResult().Trim()
-        $stderr = $stderrTask.GetAwaiter().GetResult().Trim()
-        if ([string]::IsNullOrWhiteSpace($stdout)) {
-            throw "File rename scenario '$Scenario' returned no JSON. stderr: $stderr"
-        }
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = (Get-Command pwsh -ErrorAction Stop).Source
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.Environment["ZPU_FILE_RENAME_SCENARIO"] = $Scenario
+    foreach ($argument in @(
+        "-NoProfile",
+        "-File",
+        $entryPath,
+        "-PaperRoot",
+        $paperRoot,
+        "-ZoteroDataDir",
+        $zoteroDataDir
+    )) {
+        $startInfo.ArgumentList.Add($argument)
     }
-    finally {
-        $env:ZPU_FILE_RENAME_SCENARIO = $previousScenario
-        if ($null -ne $process) {
-            $process.Dispose()
-        }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) {
+        throw "Failed to start file rename test process."
+    }
+    $script:scenarioRuns[$Scenario] = [pscustomobject]@{
+        process = $process
+        stdout = $process.StandardOutput.ReadToEndAsync()
+        stderr = $process.StandardError.ReadToEndAsync()
+        deadline = [DateTime]::UtcNow.AddSeconds(60)
+        paperRoot = $paperRoot
+    }
+}
+
+function Invoke-FileRenameScenario {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Scenario
+    )
+
+    $run = $script:scenarioRuns[$Scenario]
+    if ($null -eq $run) {
+        throw "File rename scenario '$Scenario' was not scheduled."
+    }
+    $remaining = [int][Math]::Max(0, ($run.deadline - [DateTime]::UtcNow).TotalMilliseconds)
+    if (-not $run.process.HasExited -and
+        ($remaining -eq 0 -or -not $run.process.WaitForExit($remaining))) {
+        $run.process.Kill($true)
+        $run.process.WaitForExit()
+        throw "File rename test process exceeded the 60-second timeout."
+    }
+    $run.process.WaitForExit()
+    $exitCode = $run.process.ExitCode
+    $stdout = $run.stdout.GetAwaiter().GetResult().Trim()
+    $stderr = $run.stderr.GetAwaiter().GetResult().Trim()
+    $run.process.Dispose()
+    $script:scenarioRuns.Remove($Scenario)
+    if ([string]::IsNullOrWhiteSpace($stdout)) {
+        throw "File rename scenario '$Scenario' returned no JSON. stderr: $stderr"
     }
 
     [pscustomobject]@{
         exitCode = $exitCode
         stderr = $stderr
         json = $stdout | ConvertFrom-Json
-        paperRoot = $paperRoot
+        paperRoot = $run.paperRoot
     }
 }
 
@@ -111,6 +132,19 @@ function Assert-FrozenScenario {
 
 try {
     [System.IO.Directory]::CreateDirectory($tempRoot) | Out-Null
+    foreach ($scenario in @(
+        "case-only", "case-only-second-move-fails", "hash-conflict",
+        "local-ambiguous", "local-one-match", "local-parent-junction",
+        "local-path-invalid", "local-path-outside", "missing-continues", "noop",
+        "paper-root-junction", "post-move-both-exist", "post-move-content-mismatch",
+        "post-move-hash-fails", "post-move-inspection-fails", "post-move-mismatch",
+        "post-move-rollback-fails", "post-move-target-hash-mismatch", "pre-move-drift",
+        "pre-move-storage-drift", "rename", "storage-ambiguous", "storage-missing",
+        "storage-parent-junction", "storage-path-outside", "storage-root-junction",
+        "target-conflict", "target-duplicate"
+    )) {
+        Start-FileRenameScenario -Scenario $scenario
+    }
 
     $renamed = Invoke-FileRenameScenario -Scenario "rename"
     Assert-True -Condition ($renamed.exitCode -eq 0) -Message "a unique SHA-256 match should succeed"
@@ -239,6 +273,13 @@ try {
     Write-Output "All $passed file rename assertions passed."
 }
 finally {
+    foreach ($run in @($scenarioRuns.Values)) {
+        if (-not $run.process.HasExited) {
+            $run.process.Kill($true)
+            $run.process.WaitForExit()
+        }
+        $run.process.Dispose()
+    }
     $resolvedTempRoot = [System.IO.Path]::GetFullPath($tempRoot)
     $resolvedSystemTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
     if ($resolvedTempRoot.StartsWith($resolvedSystemTemp, [System.StringComparison]::OrdinalIgnoreCase)) {

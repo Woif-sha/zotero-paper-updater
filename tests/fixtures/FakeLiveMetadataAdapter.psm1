@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 
-$productionPath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) `
-    "scripts\ZoteroPaperUpdater.MaintenanceAdapters.psm1"
+$productionPath = Join-Path $PSScriptRoot `
+    "ZoteroPaperUpdater.ProductionMaintenanceAdapters.psm1"
 $script:ProductionModule = Import-Module `
     -Name $productionPath `
     -Force `

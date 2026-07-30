@@ -5,10 +5,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$entryPath = Join-Path $repoRoot "scripts\maintain-library.ps1"
 $adapterPath = Join-Path $PSScriptRoot "fixtures\FakeLiveMetadataAdapter.psm1"
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) `
     ("zotero-live-metadata-adapter-test-" + [guid]::NewGuid().ToString("N"))
+$harnessModulePath = Join-Path $PSScriptRoot "TestMaintenanceHarness.psm1"
+Import-Module -Name $harnessModulePath -Force
+$entryPath = New-MaintenanceTestHarness `
+    -RepoRoot $repoRoot `
+    -TempRoot $tempRoot `
+    -AdapterPath $adapterPath
 $paperRoot = Join-Path $tempRoot "papers"
 $zoteroDataDir = Join-Path $tempRoot "ZoteroData"
 $callLogPath = Join-Path $tempRoot "calls.jsonl"
@@ -51,8 +56,7 @@ try {
             "-File", $entryPath,
             "-Path", (Join-Path $paperRoot "download.pdf"),
             "-PaperRoot", $paperRoot,
-            "-ZoteroDataDir", $zoteroDataDir,
-            "-AdapterModulePath", $adapterPath
+            "-ZoteroDataDir", $zoteroDataDir
         )) {
             $startInfo.ArgumentList.Add($argument)
         }
@@ -118,6 +122,3 @@ finally {
         Remove-Item -LiteralPath $resolvedTempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-
-& (Join-Path $PSScriptRoot "run-crossref-source-tests.ps1")
-& (Join-Path $PSScriptRoot "run-zotero-writer-tests.ps1")

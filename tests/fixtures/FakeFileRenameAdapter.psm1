@@ -1,7 +1,6 @@
 Set-StrictMode -Version Latest
 
-$script:repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$script:fileRenameModulePath = Join-Path $script:repoRoot "scripts\ZoteroPaperUpdater.FileRename.psm1"
+$script:fileRenameModulePath = Join-Path $PSScriptRoot "ZoteroPaperUpdater.FileRename.psm1"
 $script:pendingFixtureTargets = [Collections.Generic.Queue[object]]::new()
 
 function New-TestPdf {

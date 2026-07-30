@@ -5,9 +5,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$entryPath = Join-Path $repoRoot "scripts\maintain-library.ps1"
 $adapterPath = Join-Path $PSScriptRoot "fixtures\FakeMaintenanceAdapter.psm1"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("zotero-maintenance-entry-test-" + [guid]::NewGuid().ToString("N"))
+$harnessModulePath = Join-Path $PSScriptRoot "TestMaintenanceHarness.psm1"
+Import-Module -Name $harnessModulePath -Force
+$entryPath = New-MaintenanceTestHarness `
+    -RepoRoot $repoRoot `
+    -TempRoot $tempRoot `
+    -AdapterPath $adapterPath
 $paperRoot = Join-Path $tempRoot "papers"
 $zoteroDataDir = Join-Path $tempRoot "ZoteroData"
 $passed = 0
@@ -126,8 +131,7 @@ try {
 
     $commonArguments = @(
         "-PaperRoot", $paperRoot,
-        "-ZoteroDataDir", $zoteroDataDir,
-        "-AdapterModulePath", $adapterPath
+        "-ZoteroDataDir", $zoteroDataDir
     )
 
     $all = Invoke-MaintenanceEntry -Arguments $commonArguments
@@ -206,8 +210,7 @@ try {
     $null = New-Item -ItemType Junction -Path $paperRootJunction -Target $paperRootTarget
     $junctionRootArguments = @(
         "-PaperRoot", $paperRootJunction,
-        "-ZoteroDataDir", $zoteroDataDir,
-        "-AdapterModulePath", $adapterPath
+        "-ZoteroDataDir", $zoteroDataDir
     )
     $junctionRoot = Invoke-MaintenanceEntry -Arguments $junctionRootArguments
     Assert-True -Condition ($junctionRoot.exitCode -eq 2) -Message "a PaperRoot junction should reject all-library resolution"

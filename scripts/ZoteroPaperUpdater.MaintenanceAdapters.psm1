@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.Common.psm1") -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.McpClient.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.MetadataEnrichment.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.CrossrefSource.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.ZoteroWriter.psm1") -DisableNameChecking
@@ -71,11 +72,9 @@ function Get-MaintenanceTrashItem {
 function Invoke-DefaultCleanupMcp {
     param([Parameter(Mandatory = $true)][object]$Arguments)
 
-    $helperPath = Join-Path $PSScriptRoot "invoke-llm-for-zotero-mcp.ps1"
-    $responseJson = & $helperPath `
+    Invoke-LlmForZoteroMcp `
         -ToolName "zotero_script" `
-        -ArgumentsJson ($Arguments | ConvertTo-Json -Depth 30 -Compress)
-    $responseJson | ConvertFrom-Json -Depth 100
+        -Arguments $Arguments
 }
 
 function Get-LiveZoteroParent {

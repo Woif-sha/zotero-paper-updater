@@ -1,69 +1,186 @@
 {
-  "skill_name": "zotero-paper-updater",
-  "evals": [
+  "skillName": "zotero-paper-updater",
+  "contract": "This deterministic dataset is a routing regression proxy for the documented boundary; it is not a measured model trigger rate.",
+  "queries": [
     {
-      "id": 1,
-      "prompt": "研读指定的 HGAT 统计时序论文。MinerU Markdown 首行缺少论文标题，旁边还有标题相似的干扰缓存；不得读取 PDF。请给出使用的正文来源并总结核心方法。",
-      "expected_output": "通过 _llm_source.json 的 attachmentKey 和 parentItemKey 唯一定位正确 full.md，明确说明标题缺失不影响 key 映射，且全文读取只发生在 Markdown。",
-      "files": [],
-      "expectations": [
-        "以 attachmentKey 为主键，而不是数字目录、模糊标题或 Markdown 首标题定位缓存",
-        "区分 attachmentKey 与 parentItemKey，并从正确的 full.md 获取正文",
-        "PDF 文本读取、OCR 和 PDF converter 调用数为零",
-        "在读取正文前验证 full.md 非空且 manifest.json 与 _llm_source.json 可解析"
-      ]
+      "id": "maintain-all",
+      "pairId": 1,
+      "query": "E:\\paper 里的 PDF 都已经是 Zotero 附件了。帮我跑一遍全库维护：补能精确确认的书目信息、同步本地文件名，并处理证据完整的重复项；无法确认的留在结果里。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Maintains existing library state."
     },
     {
-      "id": 2,
-      "prompt": "把一条缺少末位作者且出版字段尚不确定的 Zotero 论文元数据尽量补齐并同步。网络上有标题近似但作者不一致的候选记录；不要猜，也不要覆盖无关字段。",
-      "expected_output": "只编辑 Zotero 父条目，使用权威精确匹配的证据和最小化变更；不确定字段保持空并在 Extra 记录状态，写前检查版本、写后重新读取验证。",
-      "files": [],
-      "expectations": [
-        "写入目标是 parentItemKey 而不是 PDF attachmentKey",
-        "拒绝采用作者不一致的近似网络记录，也不从参考文献年份、页数或 Paper ID 推断元数据",
-        "通过 Zotero UI JavaScript 执行最小变更，禁止直接修改 zotero.sqlite 或虚构本地 API 写路由",
-        "写前检查版本并在冲突时中止重读，写后验证作者顺序和未触及字段",
-        "保留原 Extra，并对每个仍未公开的适用字段追加包含字段名、检查日期和权威来源的状态说明",
-        "不得把未检索的空字段当成完成；尤其要主动核实缺失的出版时间"
-      ]
+      "id": "summarize-library",
+      "pairId": 1,
+      "query": "E:\\paper 里的 PDF 都已经是 Zotero 附件了。按研究主题把这些论文分组，逐组总结主要结论和方法差异，不要改动库。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "content-summary",
+      "boundaryReason": "Requests content synthesis without maintenance."
     },
     {
-      "id": 3,
-      "prompt": "按 Zotero 当前附件名整理一篇本地下载名杂乱的论文，并确认重命名后仍能直接读取原 MinerU Markdown。目标文件名可能已存在且内容不同。",
-      "expected_output": "以 Zotero storage 中的当前 PDF basename 为规范名，只有 SHA-256 唯一相同且无冲突时才重命名本地副本；缓存仍通过 attachmentKey 对应，冲突时停止。",
-      "files": [],
-      "expectations": [
-        "规范文件名来自 Zotero 当前存储附件，而不是网页、下载名或自行拼接",
-        "重命名前后 SHA-256 相同，且所有路径经过 PaperRoot 边界和唯一性检查",
-        "目标已存在且哈希不同或重复时停止，不覆盖、不合并、不删除",
-        "不修改 Zotero storage 文件，不因仅文件名变化重跑 MinerU",
-        "忽略过期 sourceFilename，仍以 attachmentKey 找回同一 full.md"
-      ]
+      "id": "maintain-item",
+      "pairId": 2,
+      "query": "只维护 Zotero 条目 8KJ4M2QX：它的期刊和页码有空值，本地副本名也可能落后；使用现有条目，不要新建记录。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Maintains one existing item."
     },
     {
-      "id": 4,
-      "prompt": "Zotero 数据就在 E:\\ZoteroData。请研读 parentItemKey=Z2SQADYZ 对应论文；插件缓存目录是数字编号，manifest 没有章节。以后不要再读 PDF。",
-      "expected_output": "按默认数据目录和 provenance 唯一解析 parentItemKey 到 attachmentKey 与 full.md；完成缓存健康检查后直接读取完整 Markdown，不因 manifest 零章节而回退 PDF。",
-      "files": [],
-      "expectations": [
-        "优先使用 scripts/resolve-paper-md.ps1 或等价的 key 映射，而不是用标题猜数字缓存目录",
-        "解析出 parentItemKey、attachmentKey、attachmentId 和 fullMdPath 的不同角色",
-        "manifest 无章节时检查 totalChars 后读取完整 full.md",
-        "PDF 正文读取、OCR 和 PDF converter 调用数为零"
-      ]
+      "id": "read-item",
+      "pairId": 2,
+      "query": "打开 Zotero 条目 8KJ4M2QX 对应论文，解释第三节的实验设置和作者为什么采用这个损失函数。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "content-reading",
+      "boundaryReason": "Requests paper interpretation."
     },
     {
-      "id": 5,
-      "prompt": "我在原 Zotero PDF 附件记录上替换了文件内容，但 llm-for-zotero 仍显示已经解析。请确认现有 MD 能不能继续用；不要为了省事直接读 PDF。",
-      "expected_output": "识别出插件缓存可用状态不等于内容新鲜，且 provenance v2 没有源 PDF 哈希；把已知附件替换判为需要重解析，不把文件名变化与内容替换混为一谈。",
-      "files": [],
-      "expectations": [
-        "指出 full.md 存在只能证明缓存路径存在，不能证明它对应当前 PDF 字节",
-        "指出 _llm_source.json provenance v2 不保存源 PDF 哈希",
-        "已知附件内容替换时停止使用旧 Markdown并要求通过插件重解析或修复",
-        "仅文件名变化时不错误地要求重解析",
-        "未经明确授权不读取 PDF 正文，也不直接删除缓存目录"
-      ]
+      "id": "maintain-path",
+      "pairId": 3,
+      "query": "D:\\papers\\download (7).pdf 已经关联到 Zotero。请按这个路径定位现有附件并把元数据和本地文件名维护到当前状态。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Maintains an existing paper selected by path."
+    },
+    {
+      "id": "summarize-path",
+      "pairId": 3,
+      "query": "D:\\papers\\download (7).pdf 这篇文章讲什么？给我一份面向新手的五段式摘要。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "content-summary",
+      "boundaryReason": "Requests a content summary."
+    },
+    {
+      "id": "cleanup-duplicates",
+      "pairId": 4,
+      "query": "Zotero 里这两条论文 DOI 相同，用户标签和批注分散在两边。请先验证能无损归并，再清理严格确认的重复项。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Cleans proven duplicates while preserving state."
+    },
+    {
+      "id": "compare-papers",
+      "pairId": 4,
+      "query": "Zotero 里这两篇论文都讨论 graph timing。请比较它们的模型结构、数据集和实验结论，保留两条记录。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "content-comparison",
+      "boundaryReason": "Requests comparison, not maintenance."
+    },
+    {
+      "id": "metadata-single-pass",
+      "pairId": 5,
+      "query": "这篇已管理论文的 DOI、卷期和页码为空。只做一次正式来源精确补全；如果没有可靠命中就保持原样，并返回成功 no-op。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Completes metadata on an existing item."
+    },
+    {
+      "id": "extract-dois",
+      "pairId": 5,
+      "query": "从这篇论文的正文和参考文献中找出作者提到的所有 DOI，按引用位置整理成表格。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "content-extraction",
+      "boundaryReason": "Extracts content from a paper."
+    },
+    {
+      "id": "audit-associations",
+      "pairId": 6,
+      "query": "检查 E:\\paper 与现有 Zotero PDF 附件是否一一对应；有模糊关联时冻结对应论文并在 JSON 里说明。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Audits existing maintenance associations."
+    },
+    {
+      "id": "repair-provenance",
+      "pairId": 6,
+      "query": "这个 llm-for-zotero 数字缓存的 _llm_source.json 里 attachmentKey 写错了，直接替我修好 provenance 并触发重新解析。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "mineru-repair",
+      "boundaryReason": "Changes provenance and parsing owned by llm-for-zotero."
+    },
+    {
+      "id": "guard-rename-collision",
+      "pairId": 7,
+      "query": "C:\\papers\\paper.pdf 的 Zotero 规范文件名已经存在，但我不确定是不是同一文件。请按维护规则核验哈希，冲突就不要覆盖。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Safely synchronizes a managed filename."
+    },
+    {
+      "id": "custom-bulk-rename",
+      "pairId": 7,
+      "query": "把 C:\\papers 下面的 PDF 按“年份-第一作者-标题”批量改名，不需要看 Zotero 里的附件名。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "custom-file-rename",
+      "boundaryReason": "Uses a custom naming scheme outside Zotero."
+    },
+    {
+      "id": "verify-noop",
+      "pairId": 8,
+      "query": "我刚维护过 E:\\paper，再用公开入口跑一次，确认没有待处理项时返回 changed=false，不要制造记录。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Verifies idempotent maintenance."
+    },
+    {
+      "id": "export-bibtex",
+      "pairId": 8,
+      "query": "从 Zotero 的 My Library 导出这些论文的 BibTeX，citation key 用 Better BibTeX 现有值。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "citation-export",
+      "boundaryReason": "Exports citations without maintaining items."
+    },
+    {
+      "id": "resume-cleanup",
+      "pairId": 9,
+      "query": "上次重复论文清理在清空 Zotero Trash 后中断了。请从现有事务证据恢复，现场漂移就停止。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Resumes an existing maintenance transaction."
+    },
+    {
+      "id": "import-new-pdfs",
+      "pairId": 9,
+      "query": "Downloads 里有十篇新 PDF，帮我导入 Zotero、创建父条目并自动放进 Machine Learning 集合。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "import",
+      "boundaryReason": "Creates new library items."
+    },
+    {
+      "id": "maintain-item-and-name",
+      "pairId": 10,
+      "query": "维护 ItemKey=Q7W9E2R4：用精确正式记录补齐已有父条目，并让本地副本名跟当前 storage basename 一致。",
+      "shouldTrigger": true,
+      "expectedRoute": "workflows/maintain-library.md",
+      "expectedOwner": "zotero-paper-updater",
+      "boundaryReason": "Combines metadata and filename maintenance."
+    },
+    {
+      "id": "author-knowledge-note",
+      "pairId": 10,
+      "query": "为 ItemKey=Q7W9E2R4 生成一篇知识笔记，包含问题、方法、实验、局限和我的后续问题。",
+      "shouldTrigger": false,
+      "expectedRoute": null,
+      "expectedOwner": "knowledge-note",
+      "boundaryReason": "Authors a content note."
     }
   ]
 }

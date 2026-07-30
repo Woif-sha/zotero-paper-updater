@@ -291,14 +291,12 @@ function ConvertFrom-MaintenanceCommandLine {
         Path = $null
         PaperRoot = $null
         ZoteroDataDir = $null
-        AdapterModulePath = $null
     }
     $names = @{
         "-itemkey" = "ItemKey"
         "-path" = "Path"
         "-paperroot" = "PaperRoot"
         "-zoterodatadir" = "ZoteroDataDir"
-        "-adaptermodulepath" = "AdapterModulePath"
     }
     $seen = @{}
 
@@ -366,12 +364,7 @@ try {
 
     $workflowPath = Join-Path $PSScriptRoot "ZoteroPaperUpdater.MaintenanceWorkflow.psm1"
     Import-Module -Name $workflowPath -Force -DisableNameChecking
-    $resolvedAdapterPath = if ([string]::IsNullOrWhiteSpace($parsedArguments.AdapterModulePath)) {
-        Join-Path $PSScriptRoot "ZoteroPaperUpdater.MaintenanceAdapters.psm1"
-    }
-    else {
-        $parsedArguments.AdapterModulePath
-    }
+    $resolvedAdapterPath = Join-Path $PSScriptRoot "ZoteroPaperUpdater.MaintenanceAdapters.psm1"
 
     $execution = Invoke-PaperMaintenanceWorkflow `
         -Scope $scope `

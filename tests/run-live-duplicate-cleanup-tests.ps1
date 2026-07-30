@@ -5,12 +5,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$entryPath = Join-Path $repoRoot "scripts\maintain-library.ps1"
 $adapterPath = Join-Path $PSScriptRoot "fixtures\FakeDuplicateCleanupAdapter.psm1"
 $liveModulePath = Join-Path $repoRoot "scripts\ZoteroPaperUpdater.DuplicateCleanupLive.psm1"
 Import-Module $liveModulePath -Force -DisableNameChecking
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) `
     ("zotero-live-duplicate-cleanup-test-" + [guid]::NewGuid().ToString("N"))
+$harnessModulePath = Join-Path $PSScriptRoot "TestMaintenanceHarness.psm1"
+Import-Module -Name $harnessModulePath -Force
+$entryPath = New-MaintenanceTestHarness `
+    -RepoRoot $repoRoot `
+    -TempRoot $tempRoot `
+    -AdapterPath $adapterPath
 $paperRoot = Join-Path $tempRoot "papers"
 $zoteroDataDir = Join-Path $tempRoot "ZoteroData"
 $callLog = Join-Path $tempRoot "calls.log"
@@ -51,8 +56,7 @@ try {
     try {
         $output = & pwsh -NoProfile -File $entryPath `
             -PaperRoot $paperRoot `
-            -ZoteroDataDir $zoteroDataDir `
-            -AdapterModulePath $adapterPath
+            -ZoteroDataDir $zoteroDataDir
         $exitCode = $LASTEXITCODE
     }
     finally {

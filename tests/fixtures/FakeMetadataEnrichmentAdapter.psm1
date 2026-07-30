@@ -1,7 +1,6 @@
 Set-StrictMode -Version Latest
 
-$metadataModulePath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) `
-    "scripts\ZoteroPaperUpdater.MetadataEnrichment.psm1"
+$metadataModulePath = Join-Path $PSScriptRoot "ZoteroPaperUpdater.MetadataEnrichment.psm1"
 Import-Module -Name $metadataModulePath -Force -DisableNameChecking
 
 function Add-FakeCall {
