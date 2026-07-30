@@ -2,11 +2,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.Common.psm1") -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.DuplicateIdentity.psm1") -DisableNameChecking
 
 $script:TransactionSchemaVersion = 1
 $script:TransactionStages = @(
     "planned",
     "preflighted",
+    "consolidated",
     "trashed",
     "trash_verified",
     "zotero_purged",
@@ -28,15 +30,6 @@ function Invoke-CleanupOperation {
         throw "Cleanup operation table must provide scriptblock '$Name'."
     }
     & $property.Value @Arguments
-}
-
-function Get-NormalizedDoi {
-    param([AllowNull()][string]$Doi)
-
-    if ([string]::IsNullOrWhiteSpace($Doi)) {
-        return $null
-    }
-    ($Doi.Trim() -replace "^(?i:https?://(?:dx\.)?doi\.org/)", "").ToLowerInvariant()
 }
 
 function Get-SortedUniqueString {
@@ -86,51 +79,81 @@ function Get-RequiredNestedValue {
     $current
 }
 
-function Assert-MinimalDuplicateCandidate {
+function Assert-DuplicateCleanupCandidate {
     param(
         [Parameter(Mandatory = $true)][object]$Candidate,
         [Parameter(Mandatory = $true)][object]$Scope
     )
 
     $retain = Get-RequiredPropertyValue -Object $Candidate -Name "retain"
-    $remove = Get-RequiredPropertyValue -Object $Candidate -Name "remove"
+    $candidateRemovals = Get-OptionalPropertyValue -Object $Candidate -Name "removals"
+    $removals = if ($null -ne $candidateRemovals) {
+        @($candidateRemovals)
+    }
+    else {
+        @(Get-RequiredPropertyValue -Object $Candidate -Name "remove")
+    }
+    if ($removals.Count -lt 1) { throw "Duplicate cleanup requires at least one redundant member." }
+    $remove = $removals[0]
     $retainParentKey = [string](Get-RequiredNestedValue -Object $retain -Path @("parent", "key"))
-    $removeParentKey = [string](Get-RequiredNestedValue -Object $remove -Path @("parent", "key"))
+    $removeParentKeys = @(
+        $removals | ForEach-Object {
+            [string](Get-RequiredNestedValue -Object $_ -Path @("parent", "key"))
+        }
+    )
     if ([string]::IsNullOrWhiteSpace($retainParentKey) -or
-        [string]::IsNullOrWhiteSpace($removeParentKey) -or
-        $retainParentKey -ceq $removeParentKey) {
-        throw "A minimal duplicate candidate must contain exactly two distinct parent items."
+        @($removeParentKeys | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0 -or
+        $retainParentKey -cin $removeParentKeys -or
+        @($removeParentKeys | Sort-Object -Unique).Count -ne $removeParentKeys.Count) {
+        throw "A duplicate candidate must contain distinct existing parent items."
     }
 
-    $retainDoi = Get-NormalizedDoi ([string](Get-RequiredNestedValue -Object $retain -Path @("parent", "doi")))
-    $removeDoi = Get-NormalizedDoi ([string](Get-RequiredNestedValue -Object $remove -Path @("parent", "doi")))
-    if ([string]::IsNullOrWhiteSpace($retainDoi) -or $retainDoi -cne $removeDoi) {
-        throw "Minimal duplicate cleanup requires the same canonical DOI on both parent items."
-    }
-
-    foreach ($side in @($retain, $remove)) {
-        if (-not [bool](Get-RequiredNestedValue -Object $side -Path @("cache", "healthy"))) {
-            throw "Minimal duplicate cleanup requires a healthy MinerU cache on both sides."
+    $retainDoi = ConvertTo-DuplicateDoi ([string](Get-RequiredNestedValue -Object $retain -Path @("parent", "doi")))
+    $removeDoi = ConvertTo-DuplicateDoi ([string](Get-RequiredNestedValue -Object $remove -Path @("parent", "doi")))
+    $consolidationDecision = Get-OptionalPropertyValue -Object $Candidate -Name "consolidationDecision"
+    if ($null -eq $consolidationDecision) {
+        if ([string]::IsNullOrWhiteSpace($retainDoi) -or $retainDoi -cne $removeDoi) {
+            throw "Duplicate cleanup requires the same canonical DOI on both parent items."
+        }
+        foreach ($side in @($retain) + $removals) {
+            if (-not [bool](Get-RequiredNestedValue -Object $side -Path @("cache", "healthy"))) {
+                throw "Duplicate cleanup requires a healthy MinerU cache on both sides."
+            }
+        }
+        $retainMarkdownHash = [string](Get-RequiredNestedValue -Object $retain -Path @("cache", "fullMdSha256"))
+        $removeMarkdownHashes = @(
+            $removals | ForEach-Object {
+                [string](Get-RequiredNestedValue -Object $_ -Path @("cache", "fullMdSha256"))
+            }
+        )
+        if ([string]::IsNullOrWhiteSpace($retainMarkdownHash) -or
+            @($removeMarkdownHashes | Where-Object { $_ -cne $retainMarkdownHash }).Count -gt 0) {
+            throw "Validated MinerU Markdown must confirm the same work."
         }
     }
-    $retainMarkdownHash = [string](Get-RequiredNestedValue -Object $retain -Path @("cache", "fullMdSha256"))
-    $removeMarkdownHash = [string](Get-RequiredNestedValue -Object $remove -Path @("cache", "fullMdSha256"))
-    if ([string]::IsNullOrWhiteSpace($retainMarkdownHash) -or
-        $retainMarkdownHash -cne $removeMarkdownHash) {
-        throw "Validated MinerU Markdown must confirm the same work."
-    }
-    if (-not [bool](Get-RequiredPropertyValue -Object $remove -Name "userStateEmpty")) {
+    if ($null -eq $consolidationDecision -and @(
+        $removals | Where-Object {
+            -not [bool](Get-RequiredPropertyValue -Object $_ -Name "userStateEmpty")
+        }
+    ).Count -gt 0) {
         throw "The removed side contains user state that issue #13 cannot consolidate losslessly."
     }
+    if ($null -ne $consolidationDecision -and
+        [string](Get-RequiredPropertyValue -Object $consolidationDecision -Name "status") -cne
+            "eligible") {
+        throw "A cleanup plan cannot bind a blocked consolidation decision."
+    }
 
-    $pathRules = @(
-        @("retain storage", (Get-RequiredNestedValue -Object $retain -Path @("storage", "path")), (Join-Path $Scope.zoteroDataDir "storage")),
-        @("remove storage", (Get-RequiredNestedValue -Object $remove -Path @("storage", "path")), (Join-Path $Scope.zoteroDataDir "storage")),
-        @("retain cache", (Get-RequiredNestedValue -Object $retain -Path @("cache", "path")), (Join-Path $Scope.zoteroDataDir "llm-for-zotero-mineru")),
-        @("remove cache", (Get-RequiredNestedValue -Object $remove -Path @("cache", "path")), (Join-Path $Scope.zoteroDataDir "llm-for-zotero-mineru")),
-        @("retain local", (Get-RequiredNestedValue -Object $retain -Path @("local", "path")), $Scope.paperRoot),
-        @("remove local", (Get-RequiredNestedValue -Object $remove -Path @("local", "path")), $Scope.paperRoot)
-    )
+    $pathRules = [Collections.Generic.List[object]]::new()
+    $pathRules.Add(@("retain storage", (Get-RequiredNestedValue -Object $retain -Path @("storage", "path")), (Join-Path $Scope.zoteroDataDir "storage")))
+    $pathRules.Add(@("retain cache", (Get-RequiredNestedValue -Object $retain -Path @("cache", "path")), (Join-Path $Scope.zoteroDataDir "llm-for-zotero-mineru")))
+    $pathRules.Add(@("retain local", (Get-RequiredNestedValue -Object $retain -Path @("local", "path")), $Scope.paperRoot))
+    foreach ($redundant in $removals) {
+        $key = [string]$redundant.parent.key
+        $pathRules.Add(@("remove $key storage", (Get-RequiredNestedValue -Object $redundant -Path @("storage", "path")), (Join-Path $Scope.zoteroDataDir "storage")))
+        $pathRules.Add(@("remove $key cache", (Get-RequiredNestedValue -Object $redundant -Path @("cache", "path")), (Join-Path $Scope.zoteroDataDir "llm-for-zotero-mineru")))
+        $pathRules.Add(@("remove $key local", (Get-RequiredNestedValue -Object $redundant -Path @("local", "path")), $Scope.paperRoot))
+    }
     foreach ($rule in $pathRules) {
         $path = [IO.Path]::GetFullPath([string]$rule[1])
         $root = [IO.Path]::GetFullPath([string]$rule[2])
@@ -154,7 +177,7 @@ function Assert-MinimalDuplicateCandidate {
 function Get-CleanupBindingValue {
     param([Parameter(Mandatory = $true)][object]$Plan)
 
-    [pscustomobject][ordered]@{
+    $binding = [ordered]@{
         schemaVersion = Get-RequiredPropertyValue -Object $Plan -Name "schemaVersion"
         scope = Get-RequiredPropertyValue -Object $Plan -Name "scope"
         identity = Get-RequiredPropertyValue -Object $Plan -Name "identity"
@@ -162,6 +185,14 @@ function Get-CleanupBindingValue {
         remove = Get-RequiredPropertyValue -Object $Plan -Name "remove"
         deleteKeys = @(Get-RequiredPropertyValue -Object $Plan -Name "deleteKeys")
     }
+    $consolidationDecision = Get-OptionalPropertyValue -Object $Plan -Name "consolidationDecision"
+    if ($null -ne $consolidationDecision) {
+        $binding.consolidationDecision = $consolidationDecision
+        $binding.removals = @(
+            Get-RequiredPropertyValue -Object $Plan -Name "removals"
+        )
+    }
+    [pscustomobject]$binding
 }
 
 function Get-CleanupFingerprint {
@@ -184,7 +215,8 @@ function Get-CleanupStateFingerprint {
 
     $results = Get-RequiredPropertyValue -Object $Plan -Name "results"
     $resultProof = [ordered]@{}
-    foreach ($name in @(
+    $proofNames = [Collections.Generic.List[string]]::new()
+    $proofNames.AddRange([string[]]@(
         "preflightedAt",
         "trashedAt",
         "trashVerifiedAt",
@@ -193,7 +225,11 @@ function Get-CleanupStateFingerprint {
         "localRemovedAt",
         "cacheRemovedAt",
         "completedAt"
-    )) {
+    ))
+    if ($null -ne (Get-OptionalPropertyValue -Object $results -Name "consolidatedAt")) {
+        $proofNames.Insert(1, "consolidatedAt")
+    }
+    foreach ($name in $proofNames) {
         $resultProof[$name] = $null -ne (Get-RequiredPropertyValue -Object $results -Name $name)
     }
     $state = [pscustomobject][ordered]@{
@@ -221,10 +257,12 @@ function ConvertTo-CleanupPlan {
         [Parameter(Mandatory = $true)][object]$Scope
     )
 
-    Assert-MinimalDuplicateCandidate -Candidate $Candidate -Scope $Scope
+    Assert-DuplicateCleanupCandidate -Candidate $Candidate -Scope $Scope
     $retain = Get-RequiredPropertyValue -Object $Candidate -Name "retain"
     $remove = Get-RequiredPropertyValue -Object $Candidate -Name "remove"
-    $plan = [pscustomobject][ordered]@{
+    $candidateRemovals = Get-OptionalPropertyValue -Object $Candidate -Name "removals"
+    $removals = if ($null -ne $candidateRemovals) { @($candidateRemovals) } else { @($remove) }
+    $planValue = [ordered]@{
         schemaVersion = $script:TransactionSchemaVersion
         transactionId = [guid]::NewGuid().ToString()
         stage = "planned"
@@ -232,15 +270,22 @@ function ConvertTo-CleanupPlan {
             paperRoot = [IO.Path]::GetFullPath([string]$Scope.paperRoot)
             zoteroDataDir = [IO.Path]::GetFullPath([string]$Scope.zoteroDataDir)
         }
-        identity = [pscustomobject][ordered]@{
-            doi = Get-NormalizedDoi ([string](Get-RequiredNestedValue -Object $retain -Path @("parent", "doi")))
-            fullMdSha256 = [string](Get-RequiredNestedValue -Object $retain -Path @("cache", "fullMdSha256"))
+        identity = if ($null -ne (Get-OptionalPropertyValue -Object $Candidate -Name "consolidationDecision")) {
+            (Get-RequiredPropertyValue -Object $Candidate.consolidationDecision -Name "identity")
+        }
+        else {
+            [pscustomobject][ordered]@{
+                doi = ConvertTo-DuplicateDoi ([string](Get-RequiredNestedValue -Object $retain -Path @("parent", "doi")))
+                fullMdSha256 = [string](Get-RequiredNestedValue -Object $retain -Path @("cache", "fullMdSha256"))
+            }
         }
         retain = $retain
         remove = $remove
         deleteKeys = @(
-            [string](Get-RequiredNestedValue -Object $remove -Path @("attachment", "key")),
-            [string](Get-RequiredNestedValue -Object $remove -Path @("parent", "key"))
+            $removals | ForEach-Object {
+                [string](Get-RequiredNestedValue -Object $_ -Path @("attachment", "key"))
+                [string](Get-RequiredNestedValue -Object $_ -Path @("parent", "key"))
+            } | Sort-Object -Unique
         )
         results = [pscustomobject][ordered]@{
             preflightedAt = $null
@@ -253,6 +298,13 @@ function ConvertTo-CleanupPlan {
             completedAt = $null
         }
     }
+    $consolidationDecision = Get-OptionalPropertyValue -Object $Candidate -Name "consolidationDecision"
+    if ($null -ne $consolidationDecision) {
+        $planValue.consolidationDecision = $consolidationDecision
+        $planValue.removals = @($removals)
+        $planValue.results | Add-Member -NotePropertyName "consolidatedAt" -NotePropertyValue $null
+    }
+    $plan = [pscustomobject]$planValue
     $plan | Add-Member -NotePropertyName "planFingerprint" -NotePropertyValue (
         Get-CleanupFingerprint -Plan $plan
     )
@@ -307,6 +359,7 @@ function Set-CleanupStage {
     $Plan.stage = $Stage
     $timestampProperty = @{
         preflighted = "preflightedAt"
+        consolidated = "consolidatedAt"
         trashed = "trashedAt"
         trash_verified = "trashVerifiedAt"
         zotero_purged = "zoteroPurgedAt"
@@ -359,22 +412,49 @@ function Assert-PreflightStillMatch {
         [Parameter(Mandatory = $true)][object]$Operations
     )
 
+    $consolidationDecision = Get-OptionalPropertyValue -Object $Plan -Name "consolidationDecision"
+    if ($null -ne $consolidationDecision) {
+        $liveMembers = @(
+            Invoke-CleanupOperation `
+                -Operations $Operations `
+                -Name "ReadConsolidationMembers" `
+                -Arguments @($consolidationDecision)
+        )
+        if (($liveMembers | ConvertTo-Json -Depth 30 -Compress) -cne
+            (@($consolidationDecision.members) | ConvertTo-Json -Depth 30 -Compress)) {
+            throw "Consolidation source evidence drifted before its atomic write."
+        }
+        return
+    }
     $liveState = Invoke-CleanupOperation -Operations $Operations -Name "ReadLiveState" -Arguments @($Plan)
-    $expected = [pscustomobject][ordered]@{
+    $expectedValue = [ordered]@{
         retain = $Plan.retain
         remove = $Plan.remove
     }
+    if ($null -ne (Get-OptionalPropertyValue -Object $Plan -Name "removals")) {
+        $expectedValue.removals = @($Plan.removals)
+    }
+    $expected = [pscustomobject]$expectedValue
     $liveJson = $liveState | ConvertTo-Json -Depth 30 -Compress
     $expectedJson = $expected | ConvertTo-Json -Depth 30 -Compress
     if ($liveJson -cne $expectedJson) {
         throw "Cleanup preflight evidence drifted before the first destructive operation."
     }
-    Assert-MinimalDuplicateCandidate -Candidate $expected -Scope $Plan.scope
+    $validationValue = [ordered]@{}
+    foreach ($property in $expected.PSObject.Properties) {
+        $validationValue[$property.Name] = $property.Value
+    }
+    if ($null -ne (Get-OptionalPropertyValue -Object $Plan -Name "consolidationDecision")) {
+        $validationValue.consolidationDecision = $Plan.consolidationDecision
+    }
+    Assert-DuplicateCleanupCandidate -Candidate ([pscustomobject]$validationValue) -Scope $Plan.scope
 }
 
 function Get-DeletedAction {
     param([Parameter(Mandatory = $true)][object]$Plan)
 
+    $removalsProperty = Get-OptionalPropertyValue -Object $Plan -Name "removals"
+    $removals = if ($null -ne $removalsProperty) { @($removalsProperty) } else { @($Plan.remove) }
     [pscustomobject][ordered]@{
         category = "deleted"
         kind = "strict_duplicate_cleanup"
@@ -383,18 +463,24 @@ function Get-DeletedAction {
             attachmentKey = [string]$Plan.retain.attachment.key
             path = [string]$Plan.retain.local.path
         }
-        before = [pscustomobject][ordered]@{
-            parent = $Plan.remove.parent
-            attachment = $Plan.remove.attachment
-            storage = $Plan.remove.storage
-            cache = $Plan.remove.cache
-            local = $Plan.remove.local
+        before = if ($null -ne $removalsProperty -and $removals.Count -gt 1) {
+            [pscustomobject][ordered]@{ removedMembers = $removals }
+        }
+        else {
+            [pscustomobject][ordered]@{
+                parent = $removals[0].parent
+                attachment = $removals[0].attachment
+                storage = $removals[0].storage
+                cache = $removals[0].cache
+                local = $removals[0].local
+            }
         }
         after = $null
         evidence = @(
-            "transactionId:$($Plan.transactionId)",
-            "doi:$($Plan.identity.doi)",
-            "fullMdSha256:$($Plan.identity.fullMdSha256)"
+            "transactionId:$($Plan.transactionId)"
+            foreach ($property in $Plan.identity.PSObject.Properties) {
+                "$($property.Name):$($property.Value)"
+            }
         )
     }
 }
@@ -409,19 +495,23 @@ function Get-ExpectedAssetEvidence {
         "completed" { @() }
         default { @("storage", "cache", "local") }
     }
+    $removalsProperty = Get-OptionalPropertyValue -Object $Plan -Name "removals"
+    $isGroupPlan = $null -ne $removalsProperty
+    $removals = if ($isGroupPlan) { @($removalsProperty) } else { @($Plan.remove) }
     @(
-        foreach ($sideName in @("retain", "remove")) {
-            $kinds = if ($sideName -eq "retain") {
-                @("storage", "cache", "local")
+        foreach ($kind in @("storage", "cache", "local")) {
+            [pscustomobject][ordered]@{
+                side = "retain"
+                kind = $kind
+                value = $Plan.retain.$kind
             }
-            else {
-                $removeKinds
-            }
-            foreach ($kind in $kinds) {
+        }
+        foreach ($redundant in $removals) {
+            foreach ($kind in $removeKinds) {
                 [pscustomobject][ordered]@{
-                    side = $sideName
+                    side = if ($isGroupPlan) { "remove:$($redundant.parent.key)" } else { "remove" }
                     kind = $kind
-                    value = $Plan.$sideName.$kind
+                    value = $redundant.$kind
                 }
             }
         }
@@ -441,8 +531,13 @@ function Assert-CleanupSafety {
     if ([string]$Plan.stateFingerprint -cne (Get-CleanupStateFingerprint -Plan $Plan)) {
         throw "Cleanup transaction stage proof no longer matches its persisted state."
     }
-    Assert-MinimalDuplicateCandidate `
-        -Candidate ([pscustomobject]@{ retain = $Plan.retain; remove = $Plan.remove }) `
+    $candidateValue = [ordered]@{ retain = $Plan.retain; remove = $Plan.remove }
+    if ($null -ne (Get-OptionalPropertyValue -Object $Plan -Name "removals")) {
+        $candidateValue.removals = @($Plan.removals)
+        $candidateValue.consolidationDecision = $Plan.consolidationDecision
+    }
+    Assert-DuplicateCleanupCandidate `
+        -Candidate ([pscustomobject]$candidateValue) `
         -Scope $Plan.scope
     $expected = @(Get-ExpectedAssetEvidence -Plan $Plan)
     $actual = @(
@@ -460,7 +555,7 @@ function Assert-CleanupSafety {
         $expectedAfterRemoval = @(
             $expected | Where-Object {
                 -not (
-                    [string]$_.side -ceq "remove" -and
+                    ([string]$_.side -ceq "remove" -or [string]$_.side -clike "remove:*") -and
                     [string]$_.kind -ceq $AllowedMissingRemoveKind
                 )
             }
@@ -500,6 +595,32 @@ function Invoke-PlannedCleanupStage {
 }
 
 function Invoke-PreflightedCleanupStage {
+    param(
+        [Parameter(Mandatory = $true)][object]$Plan,
+        [Parameter(Mandatory = $true)][string]$TransactionPath,
+        [Parameter(Mandatory = $true)][object]$Operations
+    )
+
+    $consolidationDecision = Get-OptionalPropertyValue -Object $Plan -Name "consolidationDecision"
+    if ($null -eq $consolidationDecision) {
+        Invoke-ConsolidatedCleanupStage `
+            -Plan $Plan `
+            -TransactionPath $TransactionPath `
+            -Operations $Operations
+        return
+    }
+    $result = Invoke-CleanupOperation `
+        -Operations $Operations `
+        -Name "ApplyConsolidation" `
+        -Arguments @($consolidationDecision)
+    $status = [string](Get-RequiredPropertyValue -Object $result -Name "status")
+    if ($status -notin @("written", "already_applied")) {
+        throw "Duplicate consolidation did not produce verified expected state: $status."
+    }
+    Set-CleanupStage -Plan $Plan -Stage "consolidated" -TransactionPath $TransactionPath
+}
+
+function Invoke-ConsolidatedCleanupStage {
     param(
         [Parameter(Mandatory = $true)][object]$Plan,
         [Parameter(Mandatory = $true)][string]$TransactionPath,
@@ -609,7 +730,9 @@ function Invoke-CleanupAssetRemovalStage {
         -Plan $Plan `
         -Operations $Operations `
         -AllowedMissingRemoveKind $Kind
-    $paths = @([string]$Plan.remove.$Kind.path)
+    $removalsProperty = Get-OptionalPropertyValue -Object $Plan -Name "removals"
+    $removals = if ($null -ne $removalsProperty) { @($removalsProperty) } else { @($Plan.remove) }
+    $paths = @($removals | ForEach-Object { [string]$_.$Kind.path })
     if (-not $assetExists) {
         Set-CleanupStage -Plan $Plan -Stage $NextStage -TransactionPath $TransactionPath
         return
@@ -676,6 +799,9 @@ function Invoke-ResumableCleanupTransaction {
             "preflighted" {
                 Invoke-PreflightedCleanupStage -Plan $plan -TransactionPath $TransactionPath -Operations $Operations
             }
+            "consolidated" {
+                Invoke-ConsolidatedCleanupStage -Plan $plan -TransactionPath $TransactionPath -Operations $Operations
+            }
             "trashed" {
                 Invoke-TrashedCleanupStage -Plan $plan -TransactionPath $TransactionPath -Operations $Operations
             }
@@ -731,6 +857,83 @@ function New-CleanupTarget {
     }
 }
 
+function Get-ConsolidationModifiedAction {
+    param([Parameter(Mandatory = $true)][object]$Plan)
+
+    $decision = Get-RequiredPropertyValue -Object $Plan -Name "consolidationDecision"
+    [pscustomobject][ordered]@{
+        category = "modified"
+        kind = "duplicate_user_state_consolidated"
+        target = [pscustomobject][ordered]@{
+            parentItemKey = [string]$decision.retainedParent.key
+            attachmentKey = [string]$decision.retainedAttachment.key
+            path = [string]$Plan.retain.local.path
+        }
+        before = [pscustomobject][ordered]@{
+            members = @($decision.members)
+        }
+        after = [pscustomobject][ordered]@{
+            parentItemKey = [string]$decision.retainedParent.key
+            attachmentKey = [string]$decision.retainedAttachment.key
+            mergedState = $decision.mergedState
+        }
+        evidence = @(
+            "transactionId:$($Plan.transactionId)",
+            "identity:$($decision.identity.kind)"
+        )
+    }
+}
+
+function Invoke-CleanupCandidateTransaction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Scope,
+        [Parameter(Mandatory = $true)][object]$Candidate,
+        [Parameter(Mandatory = $true)][object]$Operations
+    )
+
+    $target = New-CleanupTarget -Candidate $Candidate
+    $plan = ConvertTo-CleanupPlan -Candidate $Candidate -Scope $Scope
+    $transactionRoot = Join-Path $Scope.zoteroDataDir "zotero-paper-updater-transactions"
+    $memberKeys = @(
+        @([string]$plan.retain.parent.key) +
+        @(
+            if ($null -ne (Get-OptionalPropertyValue -Object $plan -Name "removals")) {
+                @($plan.removals.parent.key)
+            }
+            else {
+                @([string]$plan.remove.parent.key)
+            }
+        ) | Sort-Object
+    )
+    $transactionName = if (
+        $null -ne (Get-OptionalPropertyValue -Object $plan -Name "consolidationDecision")
+    ) {
+        "cleanup-v1-$($memberKeys -join '-')-$($plan.planFingerprint.Substring(0, 12)).json"
+    }
+    else {
+        "cleanup-v1-$($memberKeys -join '-').json"
+    }
+    $transactionPath = Join-Path $transactionRoot $transactionName
+    $transaction = Invoke-ResumableCleanupTransaction `
+        -CleanupPlan $plan `
+        -TransactionPath $transactionPath `
+        -Operations $Operations
+    $actions = [Collections.Generic.List[object]]::new()
+    if ($transaction.changed -and
+        $null -ne (Get-OptionalPropertyValue -Object $plan -Name "consolidationDecision") -and
+        [bool](Get-RequiredPropertyValue -Object $plan.consolidationDecision -Name "requiresWrite")) {
+        $actions.Add((Get-ConsolidationModifiedAction -Plan $plan))
+    }
+    if ($null -ne $transaction.action) { $actions.Add($transaction.action) }
+    [pscustomobject][ordered]@{
+        target = $target
+        status = "succeeded"
+        actions = @($actions)
+        issues = @()
+    }
+}
+
 function Invoke-MinimalDuplicateCleanup {
     [CmdletBinding()]
     param(
@@ -761,20 +964,10 @@ function Invoke-MinimalDuplicateCleanup {
         }
         $candidate = $candidates[0]
         $target = New-CleanupTarget -Candidate $candidate
-        $plan = ConvertTo-CleanupPlan -Candidate $candidate -Scope $Scope
-        $transactionRoot = Join-Path $Scope.zoteroDataDir "zotero-paper-updater-transactions"
-        $transactionName = "cleanup-v1-$($plan.retain.parent.key)-$($plan.remove.parent.key).json"
-        $transactionPath = Join-Path $transactionRoot $transactionName
-        $transaction = Invoke-ResumableCleanupTransaction `
-            -CleanupPlan $plan `
-            -TransactionPath $transactionPath `
+        Invoke-CleanupCandidateTransaction `
+            -Scope $Scope `
+            -Candidate $candidate `
             -Operations $Operations
-        [pscustomobject][ordered]@{
-            target = $target
-            status = "succeeded"
-            actions = @(if ($null -ne $transaction.action) { $transaction.action })
-            issues = @()
-        }
     }
     catch {
         $issueCode = [string]$_.Exception.Data["ZpuIssueCode"]
@@ -800,4 +993,5 @@ function Invoke-MinimalDuplicateCleanup {
 
 Export-ModuleMember -Function `
     Invoke-MinimalDuplicateCleanup, `
-    Invoke-ResumableCleanupTransaction
+    Invoke-ResumableCleanupTransaction, `
+    Invoke-CleanupCandidateTransaction

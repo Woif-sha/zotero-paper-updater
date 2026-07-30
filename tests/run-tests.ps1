@@ -298,11 +298,18 @@ finally {
     }
 }
 
+$maintenanceEntryTestPath = Join-Path $PSScriptRoot "run-maintenance-entry-tests.ps1"
+$maintenanceEntryTestText = [IO.File]::ReadAllText($maintenanceEntryTestPath)
+if (-not $maintenanceEntryTestText.Contains('$process.WaitForExit(60000)') -or
+    -not $maintenanceEntryTestText.Contains('$process.Kill($true)')) {
+    throw "The in-process maintenance suite must retain a 60-second timeout and tree kill for every child entry."
+}
+& $maintenanceEntryTestPath
 Invoke-TestScriptGroup -Path @(
-    (Join-Path $PSScriptRoot "run-maintenance-entry-tests.ps1"),
     (Join-Path $PSScriptRoot "run-metadata-enrichment-tests.ps1"),
     (Join-Path $PSScriptRoot "run-live-rename-aggregation-tests.ps1"),
     (Join-Path $PSScriptRoot "run-duplicate-cleanup-tests.ps1"),
+    (Join-Path $PSScriptRoot "run-duplicate-consolidation-tests.ps1"),
     (Join-Path $PSScriptRoot "run-live-duplicate-cleanup-tests.ps1"),
     (Join-Path $PSScriptRoot "run-live-duplicate-cleanup-adapter-tests.ps1")
 )

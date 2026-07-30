@@ -75,6 +75,46 @@ function Assert-WriterFieldsPreserved {
     }
 }
 
+function Test-ZoteroStringSetEqual {
+    param([AllowNull()][object[]]$Left, [AllowNull()][object[]]$Right)
+
+    $normalize = {
+        param($Values)
+        @(
+            @($Values) | ForEach-Object {
+                if ($null -eq $_) { return }
+                $tag = Get-OptionalPropertyValue -Object $_ -Name "tag"
+                $type = Get-OptionalPropertyValue -Object $_ -Name "type"
+                if ($null -eq $tag) { $tag = [string]$_ }
+                if ($null -eq $type) { $type = 0 }
+                "$([string]$tag)`u{001f}$([int]$type)"
+            } | Sort-Object -Unique
+        )
+    }
+    Test-DeepValueEqual -Left (& $normalize $Left) -Right (& $normalize $Right)
+}
+
+function Test-ConsolidationInboundRelationApplied {
+    param(
+        [Parameter(Mandatory = $true)][object]$LiveItems,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$RelationWrites
+    )
+
+    foreach ($rewrite in $RelationWrites) {
+        $item = Get-RequiredPropertyValue -Object $LiveItems -Name ([string]$rewrite.sourceKey)
+        $data = Get-RequiredPropertyValue -Object $item -Name "data"
+        $relations = Get-RequiredPropertyValue -Object $data -Name "relations"
+        $values = @(
+            Get-OptionalPropertyValue -Object $relations -Name ([string]$rewrite.predicate)
+        )
+        if ([string]$rewrite.oldTargetKey -cin $values -or
+            [string]$rewrite.newTargetKey -cnotin $values) {
+            return $false
+        }
+    }
+    $true
+}
+
 function Invoke-DefaultZoteroMcp {
     param([Parameter(Mandatory = $true)][object]$Arguments)
 
@@ -200,4 +240,218 @@ if (item.version !== request.expectedVersion) {
     }
 }
 
-Export-ModuleMember -Function Invoke-ZoteroMetadataWrite
+function Invoke-ZoteroConsolidationWrite {
+    param(
+        [Parameter(Mandatory = $true)][object]$Decision,
+        [Parameter(Mandatory = $true)][scriptblock]$ReadAdapter,
+        [scriptblock]$McpAdapter
+    )
+
+    if ([string](Get-RequiredPropertyValue -Object $Decision -Name "status") -cne "eligible") {
+        throw "Only an eligible duplicate consolidation decision can be written."
+    }
+    if ($null -eq $McpAdapter) {
+        $McpAdapter = { param($Arguments) Invoke-DefaultZoteroMcp -Arguments $Arguments }
+    }
+    $parentWrite = Get-RequiredPropertyValue -Object $Decision -Name "parentWriteRequest"
+    $attachmentWrite = Get-OptionalPropertyValue -Object $Decision -Name "attachmentWriteRequest"
+    $relationWrites = @(
+        Get-OptionalPropertyValue -Object $Decision -Name "inboundRelationWrites"
+    )
+    $versionEntries = [Collections.Generic.List[object]]::new()
+    $versionEntries.Add([pscustomobject]@{
+        key = [string]$parentWrite.parentItemKey
+        version = [long]$parentWrite.expectedVersion
+    })
+    if ($null -ne $attachmentWrite) {
+        $versionEntries.Add([pscustomobject]@{
+            key = [string]$attachmentWrite.attachmentKey
+            version = [long]$attachmentWrite.expectedVersion
+        })
+    }
+    foreach ($rewrite in $relationWrites) {
+        $versionEntries.Add([pscustomobject]@{
+            key = [string]$rewrite.sourceKey
+            version = [long]$rewrite.expectedVersion
+        })
+    }
+    $versionsByKey = [ordered]@{}
+    foreach ($entry in $versionEntries) {
+        if ($versionsByKey.Contains($entry.key) -and
+            [long]$versionsByKey[$entry.key] -ne [long]$entry.version) {
+            throw "Consolidation decision contains conflicting expected versions for '$($entry.key)'."
+        }
+        $versionsByKey[$entry.key] = [long]$entry.version
+    }
+    $expectedVersions = @(
+        foreach ($key in @($versionsByKey.Keys | Sort-Object)) {
+            [pscustomobject]@{ key = $key; version = $versionsByKey[$key] }
+        }
+    )
+    $payload = [pscustomobject][ordered]@{
+        retainedParentKey = [string]$parentWrite.parentItemKey
+        expectedVersions = $expectedVersions
+        tags = @($parentWrite.tags)
+        collections = @($parentWrite.collections)
+        relations = $parentWrite.relations
+        attachment = $attachmentWrite
+        inboundRelationWrites = $relationWrites
+    }
+    $beforeRead = [ordered]@{}
+    foreach ($entry in $payload.expectedVersions) {
+        $beforeRead[$entry.key] = & $ReadAdapter $entry.key
+    }
+    $parentBeforeData = Get-RequiredPropertyValue `
+        -Object $beforeRead[[string]$parentWrite.parentItemKey] `
+        -Name "data"
+    $alreadyApplied = $true
+    foreach ($property in @("tags", "collections", "relations")) {
+        $left = Get-RequiredPropertyValue -Object $parentWrite -Name $property
+        $right = Get-RequiredPropertyValue -Object $parentBeforeData -Name $property
+        $equal = if ($property -in @("tags", "collections")) {
+            Test-ZoteroStringSetEqual -Left @($left) -Right @($right)
+        }
+        else { Test-DeepValueEqual -Left $left -Right $right }
+        if (-not $equal) {
+            $alreadyApplied = $false
+        }
+    }
+    if ($null -ne $attachmentWrite) {
+        $attachmentBefore = $beforeRead[[string]$attachmentWrite.attachmentKey]
+        if ([string]$attachmentBefore.data.parentItem -cne [string]$attachmentWrite.parentItemKey) {
+            $alreadyApplied = $false
+        }
+    }
+    if (-not (Test-ConsolidationInboundRelationApplied `
+            -LiveItems ([pscustomobject]$beforeRead) `
+            -RelationWrites $relationWrites)) {
+        $alreadyApplied = $false
+    }
+    if ($alreadyApplied) {
+        return [pscustomobject][ordered]@{
+            status = "already_applied"
+            retainedParentKey = [string]$parentWrite.parentItemKey
+            retainedAttachmentKey = [string]$Decision.retainedAttachment.key
+            liveItems = [pscustomobject]$beforeRead
+        }
+    }
+    $versionDrift = @(
+        $payload.expectedVersions | Where-Object {
+            [long]$beforeRead[$_.key].version -ne [long]$_.version
+        }
+    )
+    if ($versionDrift.Count -gt 0) {
+        return [pscustomobject][ordered]@{
+            status = "version_conflict"
+            key = [string]$versionDrift[0].key
+            actualVersion = [long]$beforeRead[$versionDrift[0].key].version
+        }
+    }
+    $payloadBase64 = ConvertTo-WriterBase64Json -Value $payload
+    $script = @"
+const bytes = Uint8Array.from(atob("$payloadBase64"), c => c.charCodeAt(0));
+const request = JSON.parse(new TextDecoder().decode(bytes));
+const items = new Map();
+const conflicts = [];
+for (const expected of request.expectedVersions) {
+  const item = await Zotero.Items.getByLibraryAndKeyAsync(env.libraryID, expected.key);
+  if (!item) throw new Error("Consolidation item not found: " + expected.key);
+  items.set(expected.key, item);
+  if (item.version !== expected.version) {
+    conflicts.push({key:expected.key, expectedVersion:expected.version, actualVersion:item.version});
+  }
+}
+if (conflicts.length) {
+  env.log(JSON.stringify({status:"version_conflict", key:conflicts[0].key, actualVersion:conflicts[0].actualVersion}));
+} else {
+  await Zotero.DB.executeTransaction(async () => {
+    for (const item of items.values()) env.snapshot(item);
+    const parent = items.get(request.retainedParentKey);
+    parent.setTags(request.tags.map(tag =>
+      typeof tag === "string" ? {tag, type:0} : {tag:tag.tag, type:tag.type ?? 0}
+    ));
+    parent.setCollections(request.collections);
+    parent.setRelations(request.relations);
+    await parent.save();
+    if (request.attachment) {
+      const attachment = items.get(request.attachment.attachmentKey);
+      attachment.parentItemID = parent.id;
+      await attachment.save();
+    }
+    for (const rewrite of request.inboundRelationWrites) {
+      const source = items.get(rewrite.sourceKey);
+      const relations = source.getRelations();
+      const values = (relations[rewrite.predicate] || []).map(value =>
+        value === rewrite.oldTargetKey ? rewrite.newTargetKey : value
+      );
+      source.setRelations({...relations, [rewrite.predicate]: [...new Set(values)]});
+      await source.save();
+    }
+  });
+  env.log(JSON.stringify({status:"written", version:items.get(request.retainedParentKey).version}));
+}
+"@
+    $mcpResponse = & $McpAdapter ([pscustomobject][ordered]@{
+        mode = "write"
+        script = $script
+        description = "Consolidate strict duplicate user state with optimistic versioning"
+    })
+    $business = Get-McpBusinessResult -Response $mcpResponse
+    $reread = [ordered]@{}
+    foreach ($entry in $payload.expectedVersions) {
+        $reread[$entry.key] = & $ReadAdapter $entry.key
+    }
+    if ([string]$business.status -eq "version_conflict") {
+        $conflictKey = [string](Get-OptionalPropertyValue -Object $business -Name "key")
+        $actualVersion = [long](Get-RequiredPropertyValue -Object $business -Name "actualVersion")
+        if ([string]::IsNullOrWhiteSpace($conflictKey)) {
+            $conflictKey = @(
+                $payload.expectedVersions |
+                    Where-Object { [long]$reread[$_.key].version -ne [long]$_.version }
+            )[0].key
+        }
+        if ([long]$reread[$conflictKey].version -ne $actualVersion) {
+            throw "Consolidation version-conflict proof disagreed with the live reread."
+        }
+        return [pscustomobject][ordered]@{
+            status = "version_conflict"
+            key = $conflictKey
+            actualVersion = $actualVersion
+        }
+    }
+    $parentAfter = $reread[[string]$parentWrite.parentItemKey]
+    $parentData = Get-RequiredPropertyValue -Object $parentAfter -Name "data"
+    foreach ($property in @("tags", "collections", "relations")) {
+        $left = Get-RequiredPropertyValue -Object $parentWrite -Name $property
+        $right = Get-RequiredPropertyValue -Object $parentData -Name $property
+        $equal = if ($property -in @("tags", "collections")) {
+            Test-ZoteroStringSetEqual -Left @($left) -Right @($right)
+        }
+        else { Test-DeepValueEqual -Left $left -Right $right }
+        if (-not $equal) {
+            throw "Post-consolidation verification failed for retained parent '$property'."
+        }
+    }
+    if ($null -ne $attachmentWrite) {
+        $attachmentAfter = $reread[[string]$attachmentWrite.attachmentKey]
+        if ([string](Get-RequiredPropertyValue -Object $attachmentAfter.data -Name "parentItem") -cne
+            [string]$attachmentWrite.parentItemKey) {
+            throw "Post-consolidation attachment ownership verification failed."
+        }
+    }
+    if (-not (Test-ConsolidationInboundRelationApplied `
+            -LiveItems ([pscustomobject]$reread) `
+            -RelationWrites $relationWrites)) {
+        throw "Post-consolidation inbound relation verification failed."
+    }
+    [pscustomobject][ordered]@{
+        status = "written"
+        retainedParentKey = [string]$parentWrite.parentItemKey
+        retainedAttachmentKey = [string](Get-RequiredPropertyValue -Object $Decision -Name "retainedAttachment").key
+        liveItems = [pscustomobject]$reread
+    }
+}
+
+Export-ModuleMember -Function `
+    Invoke-ZoteroMetadataWrite, `
+    Invoke-ZoteroConsolidationWrite

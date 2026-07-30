@@ -7,6 +7,8 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $entryPath = Join-Path $repoRoot "scripts\maintain-library.ps1"
 $adapterPath = Join-Path $PSScriptRoot "fixtures\FakeDuplicateCleanupAdapter.psm1"
+$liveModulePath = Join-Path $repoRoot "scripts\ZoteroPaperUpdater.DuplicateCleanupLive.psm1"
+Import-Module $liveModulePath -Force -DisableNameChecking
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) `
     ("zotero-live-duplicate-cleanup-test-" + [guid]::NewGuid().ToString("N"))
 $paperRoot = Join-Path $tempRoot "papers"
@@ -25,6 +27,16 @@ function Assert-True {
 }
 
 try {
+    Assert-True `
+        (Test-LiveFormalFinalAttachment -AttachmentData ([pscustomobject]@{
+            title = "Version of Record"
+        })) `
+        "an explicit production attachment title should prove formal-final status"
+    Assert-True `
+        (-not (Test-LiveFormalFinalAttachment -AttachmentData ([pscustomobject]@{
+            isFinal = $true
+        }))) `
+        "a test-only isFinal field must not prove formal-final status"
     [IO.Directory]::CreateDirectory($paperRoot) | Out-Null
     foreach ($key in @("ATTACH33", "ATTACH44")) {
         $storageDirectory = Join-Path $zoteroDataDir "storage\$key"

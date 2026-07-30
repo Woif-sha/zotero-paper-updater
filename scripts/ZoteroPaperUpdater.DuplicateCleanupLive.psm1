@@ -2,13 +2,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.Common.psm1") -DisableNameChecking
-
-function Get-LiveCleanupDoi {
-    param([AllowNull()][string]$Doi)
-
-    if ([string]::IsNullOrWhiteSpace($Doi)) { return $null }
-    ($Doi.Trim() -replace "^(?i:https?://(?:dx\.)?doi\.org/)", "").ToLowerInvariant()
-}
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.DuplicateIdentity.psm1") -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.ZoteroWriter.psm1") -DisableNameChecking
 
 function Get-LiveCleanupSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -20,6 +15,20 @@ function Get-LiveCleanupItemData {
     param([Parameter(Mandatory = $true)][object]$Item)
 
     Get-RequiredPropertyValue -Object $Item -Name "data"
+}
+
+function Test-LiveFormalFinalAttachment {
+    param([Parameter(Mandatory = $true)][object]$AttachmentData)
+
+    $title = ConvertTo-DuplicateText -Value (
+        [string](Get-OptionalPropertyValue -Object $AttachmentData -Name "title")
+    )
+    if ($title -in @("version of record", "published version", "final published version")) {
+        return $true
+    }
+    $extra = [string](Get-OptionalPropertyValue -Object $AttachmentData -Name "extra")
+    @($extra -split "\r?\n" | ForEach-Object { $_.Trim().ToLowerInvariant() }) -contains
+        "zpu-formal-final: true"
 }
 
 function Test-LiveCleanupUserStateEmpty {
@@ -103,6 +112,8 @@ function Find-LiveCleanupCache {
         path = [IO.Path]::GetFullPath($cacheMatches[0].directory)
         fullMdSha256 = Get-LiveCleanupSha256 -Path $health.fullMdPath
         healthy = $true
+        complete = $true
+        parsedAt = [string](Get-OptionalPropertyValue -Object $cacheMatches[0].source -Name "parsedAt")
         attachmentKey = $AttachmentKey
         parentItemKey = $ParentKey
     }
@@ -223,21 +234,60 @@ function ConvertTo-LiveCleanupSide {
         } | ForEach-Object { [string](Get-RequiredPropertyValue -Object $_ -Name "key") } |
             Sort-Object
     )
+    $childItems = @(
+        $Items | Where-Object {
+            [string](Get-OptionalPropertyValue -Object (Get-LiveCleanupItemData -Item $_) -Name "parentItem") -in
+                @($parentKey, $attachmentKey)
+        }
+    )
+    $notes = @(
+        $childItems | Where-Object {
+            [string](Get-OptionalPropertyValue -Object (Get-LiveCleanupItemData -Item $_) -Name "itemType") -eq "note"
+        } | ForEach-Object { [string]$_.key }
+    )
+    $annotations = @(
+        $childItems | Where-Object {
+            [string](Get-OptionalPropertyValue -Object (Get-LiveCleanupItemData -Item $_) -Name "itemType") -eq "annotation"
+        }
+    )
+    $unknownChildren = @(
+        $childItems | Where-Object {
+            $data = Get-LiveCleanupItemData -Item $_
+            $itemType = [string](Get-OptionalPropertyValue -Object $data -Name "itemType")
+            [string]$_.key -cne $attachmentKey -and $itemType -notin @("note", "annotation")
+        } | ForEach-Object { [string]$_.key }
+    )
     [pscustomobject][ordered]@{
         parent = [pscustomobject][ordered]@{
             key = $parentKey
             version = Get-RequiredPropertyValue -Object $Parent -Name "version"
             doi = [string](Get-OptionalPropertyValue -Object $parentData -Name "DOI")
+            title = [string](Get-OptionalPropertyValue -Object $parentData -Name "title")
+            creators = @(Get-OptionalPropertyValue -Object $parentData -Name "creators")
+            publicationTitle = [string](Get-OptionalPropertyValue -Object $parentData -Name "publicationTitle")
+            bookTitle = [string](Get-OptionalPropertyValue -Object $parentData -Name "bookTitle")
+            conferenceName = [string](Get-OptionalPropertyValue -Object $parentData -Name "conferenceName")
+            publisher = [string](Get-OptionalPropertyValue -Object $parentData -Name "publisher")
+            date = [string](Get-OptionalPropertyValue -Object $parentData -Name "date")
+            volume = [string](Get-OptionalPropertyValue -Object $parentData -Name "volume")
+            issue = [string](Get-OptionalPropertyValue -Object $parentData -Name "issue")
+            pages = [string](Get-OptionalPropertyValue -Object $parentData -Name "pages")
             dateAdded = [string](Get-OptionalPropertyValue -Object $parentData -Name "dateAdded")
             relations = Get-OptionalPropertyValue -Object $parentData -Name "relations"
             tags = @(Get-OptionalPropertyValue -Object $parentData -Name "tags")
             collections = @(Get-OptionalPropertyValue -Object $parentData -Name "collections")
             childKeys = $childKeys
+            notes = $notes
+            unknownChildren = $unknownChildren
+            inboundRelations = @()
         }
         attachment = [pscustomobject][ordered]@{
             key = $attachmentKey
             version = Get-RequiredPropertyValue -Object $Attachment -Name "version"
             relations = Get-OptionalPropertyValue -Object $attachmentData -Name "relations"
+            tags = @(Get-OptionalPropertyValue -Object $attachmentData -Name "tags")
+            hasAnnotations = $annotations.Count -gt 0
+            isFinal = Test-LiveFormalFinalAttachment -AttachmentData $attachmentData
         }
         storage = [pscustomobject][ordered]@{
             path = [IO.Path]::GetFullPath($storageDirectory)
@@ -284,10 +334,10 @@ function Find-LiveMinimalDuplicateCandidate {
         $sides |
             Where-Object {
                 -not [string]::IsNullOrWhiteSpace(
-                    (Get-LiveCleanupDoi -Doi ([string]$_.parent.doi)
+                    (ConvertTo-DuplicateDoi -Doi ([string]$_.parent.doi)
                 ))
             } |
-            Group-Object { Get-LiveCleanupDoi -Doi ([string]$_.parent.doi) }
+            Group-Object { ConvertTo-DuplicateDoi -Doi ([string]$_.parent.doi) }
     )
     @(
         foreach ($group in $groups) {
@@ -314,6 +364,68 @@ function Find-LiveMinimalDuplicateCandidate {
                 $remove = $ordered[1]
             }
             [pscustomobject][ordered]@{ retain = $retain; remove = $remove }
+        }
+    )
+}
+
+function Get-LiveDuplicateConsolidationGroupSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][object]$Scope,
+        [Parameter(Mandatory = $true)][object[]]$Targets,
+        [Parameter(Mandatory = $true)][scriptblock]$ReadAllItems
+    )
+
+    $items = @(& $ReadAllItems $Scope)
+    $itemsByKey = @{}
+    foreach ($item in $items) {
+        $itemsByKey[[string](Get-RequiredPropertyValue -Object $item -Name "key")] = $item
+    }
+    $sides = @(
+        foreach ($target in $Targets) {
+            $parentKey = [string](Get-RequiredPropertyValue -Object $target -Name "parentItemKey")
+            $attachmentKey = [string](Get-RequiredPropertyValue -Object $target -Name "attachmentKey")
+            if (-not $itemsByKey.ContainsKey($parentKey) -or
+                -not $itemsByKey.ContainsKey($attachmentKey)) {
+                continue
+            }
+            ConvertTo-LiveCleanupSide `
+                -Scope $Scope `
+                -Parent $itemsByKey[$parentKey] `
+                -Attachment $itemsByKey[$attachmentKey] `
+                -Items $items
+        }
+    )
+    foreach ($side in $sides) {
+        $parentKey = [string]$side.parent.key
+        $inbound = @(
+            foreach ($item in $items) {
+                $data = Get-LiveCleanupItemData -Item $item
+                $relations = Get-OptionalPropertyValue -Object $data -Name "relations"
+                if ($null -eq $relations) { continue }
+                foreach ($property in $relations.PSObject.Properties) {
+                    foreach ($value in @($property.Value)) {
+                        if ([string]$value -match "/items/$([regex]::Escape($parentKey))$") {
+                            [pscustomobject][ordered]@{
+                                sourceKey = [string]$item.key
+                                sourceVersion = Get-RequiredPropertyValue -Object $item -Name "version"
+                                predicate = [string]$property.Name
+                                oldTargetValue = [string]$value
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        $side.parent.inboundRelations = $inbound
+    }
+    $groups = @(
+        $sides | Group-Object { Get-DuplicateDiscoveryKey -Member $_ }
+    )
+    @(
+        foreach ($group in $groups) {
+            if (@($group.Group).Count -ge 2) {
+                [pscustomobject][ordered]@{ members = @($group.Group) }
+            }
         }
     )
 }
@@ -387,6 +499,58 @@ function Get-LiveDuplicateCleanupOperationTable {
             retain = $candidates[0].retain
             remove = $candidates[0].remove
         }
+    }.GetNewClosure()
+    $readConsolidationMembers = {
+        param($Decision)
+        $items = @(& $ReadAllItems $Scope)
+        $byKey = @{}
+        foreach ($item in $items) { $byKey[[string]$item.key] = $item }
+        @(
+            foreach ($member in @($Decision.members)) {
+                $parentKey = [string]$member.parent.key
+                $attachmentKey = [string]$member.attachment.key
+                if (-not $byKey.ContainsKey($parentKey) -or
+                    -not $byKey.ContainsKey($attachmentKey)) {
+                    throw "A consolidation source item disappeared before the atomic write."
+                }
+                ZoteroPaperUpdater.DuplicateCleanupLive\ConvertTo-LiveCleanupSide `
+                    -Scope $Scope `
+                    -Parent $byKey[$parentKey] `
+                    -Attachment $byKey[$attachmentKey] `
+                    -Items $items
+            }
+        )
+    }.GetNewClosure()
+    $applyConsolidation = {
+        param($Decision)
+        if (-not [bool]$Decision.requiresWrite) {
+            return [pscustomobject]@{ status = "already_applied" }
+        }
+        $readItem = {
+            param($Key)
+            @(& $ReadAllItems $Scope | Where-Object { [string]$_.key -ceq [string]$Key })[0]
+        }.GetNewClosure()
+        $result = ZoteroPaperUpdater.ZoteroWriter\Invoke-ZoteroConsolidationWrite `
+            -Decision $Decision `
+            -ReadAdapter $readItem `
+            -McpAdapter $McpAdapter
+        if ([string]$result.status -in @("written", "already_applied") -and
+            $null -ne $Decision.attachmentWriteRequest) {
+            $selected = @(
+                $Decision.members | Where-Object {
+                    [string]$_.attachment.key -ceq [string]$Decision.retainedAttachment.key
+                }
+            )[0]
+            $sourcePath = Join-Path $selected.cache.path "_llm_source.json"
+            $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json -Depth 20
+            $source.parentItemKey = [string]$Decision.retainedParent.key
+            [IO.File]::WriteAllText(
+                $sourcePath,
+                ($source | ConvertTo-Json -Depth 20),
+                [Text.UTF8Encoding]::new($false)
+            )
+        }
+        $result
     }.GetNewClosure()
     $getTrashKeys = {
         @(
@@ -473,6 +637,8 @@ env.log(JSON.stringify({status:"purged", keys:expected}));
     [pscustomobject]@{
         FindCandidates = $findCandidates
         ReadLiveState = $readLiveState
+        ReadConsolidationMembers = $readConsolidationMembers
+        ApplyConsolidation = $applyConsolidation
         GetTrashKeys = $getTrashKeys
         TrashZotero = $trashZotero
         GetExistingZoteroKeys = $getExistingZoteroKeys
@@ -488,7 +654,10 @@ env.log(JSON.stringify({status:"purged", keys:expected}));
 
 Export-ModuleMember -Function `
     Get-LiveDuplicateCleanupOperationTable, `
+    Get-LiveDuplicateConsolidationGroupSnapshot, `
     Find-LiveMinimalDuplicateCandidate, `
+    ConvertTo-LiveCleanupSide, `
+    Test-LiveFormalFinalAttachment, `
     Get-LiveCleanupAssetEvidence, `
     ConvertTo-LiveCleanupBase64, `
     Invoke-LiveCleanupScript

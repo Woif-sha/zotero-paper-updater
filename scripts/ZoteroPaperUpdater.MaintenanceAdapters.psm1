@@ -6,6 +6,7 @@ Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.CrossrefSource.psm1")
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.ZoteroWriter.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.FileRename.psm1") -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.DuplicateCleanup.psm1") -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot "ZoteroPaperUpdater.DuplicateConsolidation.psm1") -DisableNameChecking
 Import-Module `
     (Join-Path $PSScriptRoot "ZoteroPaperUpdater.DuplicateCleanupLive.psm1") `
     -DisableNameChecking `
@@ -218,9 +219,41 @@ function Invoke-MaintenanceCleanup {
         -ReadAllItems $ReadAllItems `
         -ReadTrashItems $ReadTrashItems `
         -McpAdapter $McpAdapter
-    Invoke-MinimalDuplicateCleanup `
+    try {
+        $groups = @(
+            Get-LiveDuplicateConsolidationGroupSnapshot `
+                -Scope $Scope `
+                -Targets $Targets `
+                -ReadAllItems $ReadAllItems
+        )
+    }
+    catch {
+        $issueCode = [string]$_.Exception.Data["ZpuIssueCode"]
+        if ([string]::IsNullOrWhiteSpace($issueCode)) { throw }
+        return [pscustomobject][ordered]@{
+            status = "failed"
+            actions = @()
+            issues = @([pscustomobject][ordered]@{
+                severity = "error"
+                code = $issueCode
+                target = $null
+                message = $_.Exception.Message
+                evidence = @($_.Exception.GetType().FullName)
+            })
+            results = @()
+        }
+    }
+    if ($groups.Count -eq 0) {
+        return [pscustomobject][ordered]@{
+            status = "succeeded"
+            actions = @()
+            issues = @()
+            results = @()
+        }
+    }
+    Invoke-DuplicateConsolidationCleanup `
         -Scope $Scope `
-        -Targets $Targets `
+        -GroupSnapshots $groups `
         -Operations $operations
 }
 
